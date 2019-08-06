@@ -37,6 +37,8 @@
 
 #include "../include/solver_structure.hpp"
 #include "../../Common/include/toolboxes/printing_toolbox.hpp"
+#include "../include/variables/CEulerVariable.hpp"
+#include "../include/variables/CNSVariable.hpp"
 
 CEulerSolver::CEulerSolver(void) : CSolver() {
   
@@ -101,7 +103,7 @@ CEulerSolver::CEulerSolver(void) : CSolver() {
   nVertex = NULL;
 
   Smatrix = NULL; Cvector = NULL;
- 
+
   Secondary = NULL; Secondary_i = NULL; Secondary_j = NULL;
 
   /*--- Fixed CL mode initialization (cauchy criteria) ---*/
@@ -164,7 +166,7 @@ CEulerSolver::CEulerSolver(void) : CSolver() {
   CkInflow                      = NULL;
   CkOutflow1                    = NULL;
   CkOutflow2                    = NULL;
- 
+
 }
 
 CEulerSolver::CEulerSolver(CGeometry *geometry, CConfig *config, unsigned short iMesh) : CSolver() {
@@ -189,6 +191,9 @@ CEulerSolver::CEulerSolver(CGeometry *geometry, CConfig *config, unsigned short 
   bool fsi     = config->GetFSI_Simulation();
   bool multizone = config->GetMultizone_Problem();
   string filename_ = config->GetSolution_FlowFileName();
+
+  /*--- Store the multigrid level. ---*/
+  MGLevel = iMesh;
 
   /*--- Check for a restart file to evaluate if there is a change in the angle of attack
    before computing all the non-dimesional quantities. ---*/
@@ -367,17 +372,25 @@ CEulerSolver::CEulerSolver(CGeometry *geometry, CConfig *config, unsigned short 
   nMarker      = config->GetnMarker_All();
   nPoint       = geometry->GetnPoint();
   nPointDomain = geometry->GetnPointDomain();
- 
+
   /*--- Store the number of vertices on each marker for deallocation later ---*/
 
   nVertex = new unsigned long[nMarker];
-  for (iMarker = 0; iMarker < nMarker; iMarker++) 
+  for (iMarker = 0; iMarker < nMarker; iMarker++)
     nVertex[iMarker] = geometry->nVertex[iMarker];
- 
+  
   /*--- Perform the non-dimensionalization for the flow equations using the
    specified reference values. ---*/
   
   SetNondimensionalization(config, iMesh);
+  
+  /*--- Check if we are executing a verification case. If so, the
+   VerificationSolution object will be instantiated for a particular
+   option from the available library of verification solutions. Note
+   that this is done after SetNondim(), as problem-specific initial
+   parameters are needed by the solution constructors. ---*/
+  
+  SetVerificationSolution(nDim, nVar, config);
   
   /*--- Allocate the node variables ---*/
   
@@ -463,8 +476,7 @@ CEulerSolver::CEulerSolver(CGeometry *geometry, CConfig *config, unsigned short 
     if (rank == MASTER_NODE) cout << "Initialize Jacobian structure (Euler). MG level: " << iMesh <<"." << endl;
     Jacobian.Initialize(nPoint, nPointDomain, nVar, nVar, true, geometry, config);
     
-    if ((config->GetKind_Linear_Solver_Prec() == LINELET) ||
-        (config->GetKind_Linear_Solver() == SMOOTHER_LINELET)) {
+    if (config->GetKind_Linear_Solver_Prec() == LINELET) {
       nLineLets = Jacobian.BuildLineletPreconditioner(geometry, config);
       if (rank == MASTER_NODE) cout << "Compute linelet structure. " << nLineLets << " elements in each line (average)." << endl;
     }
@@ -560,33 +572,33 @@ CEulerSolver::CEulerSolver(CGeometry *geometry, CConfig *config, unsigned short 
 
   Inlet_Ttotal = new su2double* [nMarker];
   for (iMarker = 0; iMarker < nMarker; iMarker++) {
-      Inlet_Ttotal[iMarker] = new su2double [geometry->nVertex[iMarker]];
-      for (iVertex = 0; iVertex < geometry->nVertex[iMarker]; iVertex++) {
-        Inlet_Ttotal[iMarker][iVertex] = 0;
-      }
+    Inlet_Ttotal[iMarker] = new su2double [geometry->nVertex[iMarker]];
+    for (iVertex = 0; iVertex < geometry->nVertex[iMarker]; iVertex++) {
+      Inlet_Ttotal[iMarker][iVertex] = 0;
+    }
   }
 
   /*--- Store the value of the Total Temperature at the inlet BC ---*/
 
   Inlet_Ptotal = new su2double* [nMarker];
   for (iMarker = 0; iMarker < nMarker; iMarker++) {
-      Inlet_Ptotal[iMarker] = new su2double [geometry->nVertex[iMarker]];
-      for (iVertex = 0; iVertex < geometry->nVertex[iMarker]; iVertex++) {
-        Inlet_Ptotal[iMarker][iVertex] = 0;
-      }
+    Inlet_Ptotal[iMarker] = new su2double [geometry->nVertex[iMarker]];
+    for (iVertex = 0; iVertex < geometry->nVertex[iMarker]; iVertex++) {
+      Inlet_Ptotal[iMarker][iVertex] = 0;
+    }
   }
 
   /*--- Store the value of the Flow direction at the inlet BC ---*/
 
   Inlet_FlowDir = new su2double** [nMarker];
   for (iMarker = 0; iMarker < nMarker; iMarker++) {
-      Inlet_FlowDir[iMarker] = new su2double* [geometry->nVertex[iMarker]];
-      for (iVertex = 0; iVertex < geometry->nVertex[iMarker]; iVertex++) {
-        Inlet_FlowDir[iMarker][iVertex] = new su2double [nDim];
-        for (iDim = 0; iDim < nDim; iDim++) {
-          Inlet_FlowDir[iMarker][iVertex][iDim] = 0;
-        }
+    Inlet_FlowDir[iMarker] = new su2double* [geometry->nVertex[iMarker]];
+    for (iVertex = 0; iVertex < geometry->nVertex[iMarker]; iVertex++) {
+      Inlet_FlowDir[iMarker][iVertex] = new su2double [nDim];
+      for (iDim = 0; iDim < nDim; iDim++) {
+        Inlet_FlowDir[iMarker][iVertex][iDim] = 0;
       }
+    }
   }
 
   /*--- Force definition and coefficient arrays for all of the markers ---*/
@@ -619,7 +631,7 @@ CEulerSolver::CEulerSolver(CGeometry *geometry, CConfig *config, unsigned short 
   CoPx_Inv           = new su2double[nMarker];
   CoPy_Inv           = new su2double[nMarker];
   CoPz_Inv           = new su2double[nMarker];
- 
+
   ForceMomentum     = new su2double[nDim];
   MomentMomentum    = new su2double[3];
   CD_Mnt        = new su2double[nMarker];
@@ -724,25 +736,25 @@ CEulerSolver::CEulerSolver(CGeometry *geometry, CConfig *config, unsigned short 
   /*--- Initialize the secondary values for direct derivative approxiations ---*/
   
   switch(direct_diff) {
-    case NO_DERIVATIVE:
-      /*--- Default ---*/
-      break;
-    case D_DENSITY:
-      SU2_TYPE::SetDerivative(Density_Inf, 1.0);
-      break;
-    case D_PRESSURE:
-      SU2_TYPE::SetDerivative(Pressure_Inf, 1.0);
-      break;
-    case D_TEMPERATURE:
-      SU2_TYPE::SetDerivative(Temperature_Inf, 1.0);
-      break;
-    case D_MACH: case D_AOA:
-    case D_SIDESLIP: case D_REYNOLDS:
-    case D_TURB2LAM: case D_DESIGN:
-      /*--- Already done in postprocessing of config ---*/
-      break;
-    default:
-      break;
+  case NO_DERIVATIVE:
+    /*--- Default ---*/
+    break;
+  case D_DENSITY:
+    SU2_TYPE::SetDerivative(Density_Inf, 1.0);
+    break;
+  case D_PRESSURE:
+    SU2_TYPE::SetDerivative(Pressure_Inf, 1.0);
+    break;
+  case D_TEMPERATURE:
+    SU2_TYPE::SetDerivative(Temperature_Inf, 1.0);
+    break;
+  case D_MACH: case D_AOA:
+  case D_SIDESLIP: case D_REYNOLDS:
+  case D_TURB2LAM: case D_DESIGN:
+    /*--- Already done in postprocessing of config ---*/
+    break;
+  default:
+    break;
   }
 
 
@@ -1021,8 +1033,8 @@ CEulerSolver::~CEulerSolver(void) {
   
   if ( SlidingStateNodes != NULL ){
     for (iMarker = 0; iMarker < nMarker; iMarker++){
-        if (SlidingStateNodes[iMarker] != NULL)
-            delete [] SlidingStateNodes[iMarker];  
+      if (SlidingStateNodes[iMarker] != NULL)
+        delete [] SlidingStateNodes[iMarker];
     }
     delete [] SlidingStateNodes;
   }
@@ -1035,7 +1047,7 @@ CEulerSolver::~CEulerSolver(void) {
     }
     delete [] DonorPrimVar;
   }
-    
+
   if (DonorGlobalIndex != NULL) {
     for (iMarker = 0; iMarker < nMarker; iMarker++)
       delete [] DonorGlobalIndex[iMarker];
@@ -1525,7 +1537,7 @@ void CEulerSolver::InitTurboContainers(CGeometry *geometry, CConfig *config){
 void CEulerSolver::Set_MPI_ActDisk(CSolver **solver_container, CGeometry *geometry, CConfig *config) {
 
   unsigned long iter,  iPoint, iVertex, jVertex, iPointTotal,
-  Buffer_Send_nPointTotal = 0;
+      Buffer_Send_nPointTotal = 0;
   long iGlobalIndex, iGlobal;
   unsigned short iVar, iMarker, jMarker;
   long nDomain = 0, iDomain, jDomain;
@@ -1586,7 +1598,7 @@ void CEulerSolver::Set_MPI_ActDisk(CSolver **solver_container, CGeometry *geomet
           //ActDisk_Perimeter = geometry->vertex[iMarker][iVertex]->GetActDisk_Perimeter();
           iPoint = geometry->vertex[iMarker][iVertex]->GetNode();
           jDomain = geometry->vertex[iMarker][iVertex]->GetDonorProcessor();
-//          if ((iDomain == jDomain) && (geometry->node[iPoint]->GetDomain()) && (!ActDisk_Perimeter)) {
+          //          if ((iDomain == jDomain) && (geometry->node[iPoint]->GetDomain()) && (!ActDisk_Perimeter)) {
           if ((iDomain == jDomain) && (geometry->node[iPoint]->GetDomain())) {
             Buffer_Send_nPointTotal++;
           }
@@ -1692,7 +1704,7 @@ void CEulerSolver::Set_MPI_ActDisk(CSolver **solver_container, CGeometry *geomet
           jDomain = geometry->vertex[iMarker][iVertex]->GetDonorProcessor();
           //ActDisk_Perimeter = geometry->vertex[iMarker][iVertex]->GetActDisk_Perimeter();
 
-//          if ((iDomain == jDomain) && (geometry->node[iPoint]->GetDomain()) && (!ActDisk_Perimeter)) {
+          //          if ((iDomain == jDomain) && (geometry->node[iPoint]->GetDomain()) && (!ActDisk_Perimeter)) {
           if ((iDomain == jDomain) && (geometry->node[iPoint]->GetDomain())) {
 
             for (iVar = 0; iVar < nPrimVar; iVar++) {
@@ -1731,12 +1743,12 @@ void CEulerSolver::Set_MPI_ActDisk(CSolver **solver_container, CGeometry *geomet
        date to iDomain with non-blocking sends. ---*/
 
       SU2_MPI::Bsend(&Buffer_Send_PrimVar[PointTotal_Counter*(nPrimVar_)],
-                     nPointTotal_s[iDomain]*(nPrimVar_), MPI_DOUBLE, iDomain,
-                     iDomain,  MPI_COMM_WORLD);
+          nPointTotal_s[iDomain]*(nPrimVar_), MPI_DOUBLE, iDomain,
+          iDomain,  MPI_COMM_WORLD);
 
       SU2_MPI::Bsend(&Buffer_Send_Data[PointTotal_Counter*(3)],
-                     nPointTotal_s[iDomain]*(3), MPI_LONG, iDomain,
-                     iDomain+nDomain,  MPI_COMM_WORLD);
+          nPointTotal_s[iDomain]*(3), MPI_LONG, iDomain,
+          iDomain+nDomain,  MPI_COMM_WORLD);
 
 #endif
 
@@ -1874,7 +1886,7 @@ void CEulerSolver::Set_MPI_ActDisk(CSolver **solver_container, CGeometry *geomet
 void CEulerSolver::Set_MPI_Nearfield(CGeometry *geometry, CConfig *config) {
   
   unsigned long iter,  iPoint, iVertex, jVertex, iPointTotal,
-  Buffer_Send_nPointTotal = 0;
+      Buffer_Send_nPointTotal = 0;
   long iGlobalIndex, iGlobal;
   unsigned short iVar, iMarker, jMarker;
   long nDomain = 0, iDomain, jDomain;
@@ -1884,325 +1896,7 @@ void CEulerSolver::Set_MPI_Nearfield(CGeometry *geometry, CConfig *config) {
   /*--- MPI status and request arrays for non-blocking communications ---*/
   
   SU2_MPI::Status status, status_;
-
-
-#endif
-
-  /*--- Define buffer vector interior domain ---*/
-
-  su2double        *Buffer_Send_PrimVar          = NULL;
-
-  unsigned long *nPointTotal_s = new unsigned long[size];
-  unsigned long *nPointTotal_r = new unsigned long[size];
-  su2double        *iPrimVar          = new su2double [nPrimVar];
-
-  unsigned long Buffer_Size_PrimVar          = 0;
-
-  unsigned long PointTotal_Counter = 0;
-
-  /*--- Allocate the memory that we only need if we have MPI support ---*/
-
-  su2double        *Buffer_Receive_PrimVar          = NULL;
-
-  /*--- Basic dimensionalization ---*/
-
-  nDomain = size;
-
-  /*--- This loop gets the array sizes of points for each
-   rank to send to each other rank. ---*/
-
-  for (iDomain = 0; iDomain < nDomain; iDomain++) {
-
-    /*--- Loop over the markers to perform the dimensionalizaton
-     of the domain variables ---*/
-
-    Buffer_Send_nPointTotal = 0;
-
-    /*--- Loop over all of the markers and count the number of each
-     type of point and element that needs to be sent. ---*/
-
-    for (iMarker = 0; iMarker < config->GetnMarker_All(); iMarker++) {
-      if (config->GetMarker_All_KindBC(iMarker) == NEARFIELD_BOUNDARY) {
-        for (iVertex = 0; iVertex < geometry->nVertex[iMarker]; iVertex++) {
-          iPoint = geometry->vertex[iMarker][iVertex]->GetNode();
-          jDomain = geometry->vertex[iMarker][iVertex]->GetDonorProcessor();
-          if ((iDomain == jDomain) && (geometry->node[iPoint]->GetDomain())) {
-            Buffer_Send_nPointTotal++;
-          }
-        }
-      }
-    }
-
-    /*--- Store the counts on a partition by partition basis. ---*/
-
-    nPointTotal_s[iDomain] = Buffer_Send_nPointTotal;
-
-    /*--- Total counts for allocating send buffers below ---*/
-
-    Buffer_Size_PrimVar          += nPointTotal_s[iDomain]*(nPrimVar+3);
-    
-  }
   
-  /*--- Allocate the buffer vectors in the appropiate domain (master, iDomain) ---*/
-  
-  Buffer_Send_PrimVar          = new su2double[Buffer_Size_PrimVar];
-  
-  /*--- Now that we know the sizes of the point, we can
-   allocate and send the information in large chunks to all processors. ---*/
-  
-  for (iDomain = 0; iDomain < nDomain; iDomain++) {
-    
-    /*--- A rank does not communicate with itself through MPI ---*/
-
-    if (rank != iDomain) {
-      
-#ifdef HAVE_MPI
-      
-      /*--- Communicate the counts to iDomain with non-blocking sends ---*/
-      
-      SU2_MPI::Bsend(&nPointTotal_s[iDomain], 1, MPI_UNSIGNED_LONG, iDomain, iDomain, MPI_COMM_WORLD);
-      
-#endif
-
-    } else {
-
-      /*--- If iDomain = rank, we simply copy values into place in memory ---*/
-
-      nPointTotal_r[iDomain] = nPointTotal_s[iDomain];
-
-    }
-
-    /*--- Receive the counts. All processors are sending their counters to
-     iDomain up above, so only iDomain needs to perform the recv here from
-     all other ranks. ---*/
-
-    if (rank == iDomain) {
-
-      for (jDomain = 0; jDomain < size; jDomain++) {
-
-        /*--- A rank does not communicate with itself through MPI ---*/
-
-        if (rank != jDomain) {
-
-#ifdef HAVE_MPI
-
-          /*--- Recv the data by probing for the current sender, jDomain,
-           first and then receiving the values from it. ---*/
-          
-          SU2_MPI::Recv(&nPointTotal_r[jDomain], 1, MPI_UNSIGNED_LONG, jDomain, rank, MPI_COMM_WORLD, &status);
-          
-#endif
-          
-        }
-      }
-
-    }
-  }
-
-  /*--- Wait for the non-blocking sends to complete. ---*/
-
-#ifdef HAVE_MPI
-
-  SU2_MPI::Barrier(MPI_COMM_WORLD);
-  
-#endif
-  
-  /*--- Initialize the counters for the larger send buffers (by domain) ---*/
-
-  PointTotal_Counter  = 0;
-
-  for (iDomain = 0; iDomain < nDomain; iDomain++) {
-    
-    /*--- Set the value of the interior geometry. Initialize counters. ---*/
-    
-    iPointTotal = 0;
-    
-    /*--- Load up the actual values into the buffers for sending. ---*/
-    
-    for (iMarker = 0; iMarker < config->GetnMarker_All(); iMarker++) {
-      
-      if (config->GetMarker_All_KindBC(iMarker) == NEARFIELD_BOUNDARY) {
-        
-        for (iVertex = 0; iVertex < geometry->nVertex[iMarker]; iVertex++) {
-          iPoint = geometry->vertex[iMarker][iVertex]->GetNode();
-          jDomain = geometry->vertex[iMarker][iVertex]->GetDonorProcessor();
-          if ((iDomain == jDomain) && (geometry->node[iPoint]->GetDomain())) {
-            iGlobalIndex = geometry->node[iPoint]->GetGlobalIndex();
-            jVertex = geometry->vertex[iMarker][iVertex]->GetDonorVertex();
-            jMarker = geometry->vertex[iMarker][iVertex]->GetDonorMarker();
-            for (iVar = 0; iVar < nPrimVar; iVar++) {
-              Buffer_Send_PrimVar[(nPrimVar+3)*(PointTotal_Counter+iPointTotal)+iVar] = node[iPoint]->GetPrimitive(iVar);
-            }
-            Buffer_Send_PrimVar[(nPrimVar+3)*(PointTotal_Counter+iPointTotal)+(nPrimVar+0)]  = su2double(iGlobalIndex);
-            Buffer_Send_PrimVar[(nPrimVar+3)*(PointTotal_Counter+iPointTotal)+(nPrimVar+1)] = su2double(jVertex);
-            Buffer_Send_PrimVar[(nPrimVar+3)*(PointTotal_Counter+iPointTotal)+(nPrimVar+2)]  = su2double(jMarker);
-
-            iPointTotal++;
-            
-          }
-          
-        }
-        
-      }
-      
-    }
-    
-    /*--- Send the buffers with the geometrical information ---*/
-    
-    if (iDomain != rank) {
-      
-#ifdef HAVE_MPI
-      
-      /*--- Communicate the coordinates, global index, colors, and element
-       date to iDomain with non-blocking sends. ---*/
-      
-      SU2_MPI::Bsend(&Buffer_Send_PrimVar[PointTotal_Counter*(nPrimVar+3)],
-                     nPointTotal_s[iDomain]*(nPrimVar+3), MPI_DOUBLE, iDomain,
-                     iDomain,  MPI_COMM_WORLD);
-      
-#endif
-      
-    }
-    
-    else {
-      
-      /*--- Allocate local memory for the local recv of the elements ---*/
-      
-      Buffer_Receive_PrimVar            = new su2double[nPointTotal_s[iDomain]*(nPrimVar+3)];
-      
-      for (iter = 0; iter < nPointTotal_s[iDomain]*(nPrimVar+3); iter++)
-        Buffer_Receive_PrimVar[iter] = Buffer_Send_PrimVar[PointTotal_Counter*(nPrimVar+3)+iter];
-
-      /*--- Recv the point data from ourselves (same procedure as above) ---*/
-
-      for (iPoint = 0; iPoint < nPointTotal_r[iDomain]; iPoint++) {
-        
-        iGlobal       =  SU2_TYPE::Int(Buffer_Receive_PrimVar[iPoint*(nPrimVar+3)+(nPrimVar+0)]);
-        iVertex      =  SU2_TYPE::Int(Buffer_Receive_PrimVar[iPoint*(nPrimVar+3)+(nPrimVar+1)]);
-        iMarker      = SU2_TYPE::Int(Buffer_Receive_PrimVar[iPoint*(nPrimVar+3)+(nPrimVar+2)]);
-        for (iVar = 0; iVar < nPrimVar; iVar++)
-          iPrimVar[iVar] = Buffer_Receive_PrimVar[iPoint*(nPrimVar+3)+iVar];
-
-        if (iVertex < 0.0) cout <<" Negative iVertex (receive)" << endl;
-        if (iMarker < 0.0) cout <<" Negative iMarker (receive)" << endl;
-
-        if (iMarker > nMarker) cout << "ERROR" <<  endl;
-        if (iVertex > geometry->nVertex[iMarker]) cout << "ERROR" <<  endl;
-
-        for (iVar = 0; iVar < nPrimVar; iVar++)
-          SetDonorPrimVar(iMarker, iVertex, iVar, iPrimVar[iVar]);
-
-        SetDonorGlobalIndex(iMarker, iVertex, iGlobal);
-
-      }
-
-      /*--- Delete memory for recv the point stuff ---*/
-
-      delete [] Buffer_Receive_PrimVar;
-
-    }
-
-    /*--- Increment the counters for the send buffers (iDomain loop) ---*/
-
-    PointTotal_Counter += iPointTotal;
-    
-  }
-  
-  /*--- Wait for the non-blocking sends to complete. ---*/
-  
-#ifdef HAVE_MPI
-
-  SU2_MPI::Barrier(MPI_COMM_WORLD);
-  
-#endif
-  
-  /*--- The next section begins the recv of all data for the interior
-   points/elements in the mesh. First, create the domain structures for
-   the points on this rank. First, we recv all of the point data ---*/
-  
-  for (iDomain = 0; iDomain < size; iDomain++) {
-    
-    if (rank != iDomain) {
-      
-#ifdef HAVE_MPI
-      
-      /*--- Allocate the receive buffer vector. Send the colors so that we
-       know whether what we recv is an owned or halo node. ---*/
-      
-      Buffer_Receive_PrimVar            = new su2double [nPointTotal_r[iDomain]*(nPrimVar+3)];
-      
-      /*--- Receive the buffers with the coords, global index, and colors ---*/
-      
-      SU2_MPI::Recv(Buffer_Receive_PrimVar, nPointTotal_r[iDomain]*(nPrimVar+3) , MPI_DOUBLE,
-                    iDomain, rank, MPI_COMM_WORLD, &status_);
-
-      /*--- Loop over all of the points that we have recv'd and store the
-       coords, global index vertex and markers ---*/
-
-      for (iPoint = 0; iPoint < nPointTotal_r[iDomain]; iPoint++) {
-        
-        iGlobal      = SU2_TYPE::Int(Buffer_Receive_PrimVar[iPoint*(nPrimVar+3)+(nPrimVar+0)]);
-        iVertex      = SU2_TYPE::Int(Buffer_Receive_PrimVar[iPoint*(nPrimVar+3)+(nPrimVar+1)]);
-        iMarker      = SU2_TYPE::Int(Buffer_Receive_PrimVar[iPoint*(nPrimVar+3)+(nPrimVar+2)]);
-        for (iVar = 0; iVar < nPrimVar; iVar++)
-          iPrimVar[iVar] = Buffer_Receive_PrimVar[iPoint*(nPrimVar+3)+iVar];
-
-        if (iVertex < 0.0) cout <<" Negative iVertex (receive)" << endl;
-        if (iMarker < 0.0) cout <<" Negative iMarker (receive)" << endl;
-
-        if (iMarker > nMarker) cout << "ERROR" <<  endl;
-        if (iVertex > geometry->nVertex[iMarker]) cout << "ERROR" <<  endl;
-
-        for (iVar = 0; iVar < nPrimVar; iVar++)
-          SetDonorPrimVar(iMarker, iVertex, iVar,  iPrimVar[iVar]);
-
-        SetDonorGlobalIndex(iMarker, iVertex, iGlobal);
-
-      }
-      
-      /*--- Delete memory for recv the point stuff ---*/
-      
-      delete [] Buffer_Receive_PrimVar;
-      
-#endif
-      
-    }
-
-  }
-
-  /*--- Wait for the non-blocking sends to complete. ---*/
-
-#ifdef HAVE_MPI
-  
-  SU2_MPI::Barrier(MPI_COMM_WORLD);
-  
-#endif
-  
-  /*--- Free all of the memory used for communicating points and elements ---*/
-  
-  delete[] Buffer_Send_PrimVar;
-  
-  /*--- Release all of the temporary memory ---*/
-  
-  delete [] nPointTotal_s;
-  delete [] nPointTotal_r;
-  delete [] iPrimVar;
-
-}
-
-void CEulerSolver::Set_MPI_Interface(CGeometry *geometry, CConfig *config) {
-
-  unsigned long iter,  iPoint, iVertex, jVertex, iPointTotal,
-  Buffer_Send_nPointTotal = 0, iGlobalIndex, iGlobal;
-  unsigned short iVar, iMarker, jMarker;
-  long nDomain = 0, iDomain, jDomain;
-
-#ifdef HAVE_MPI
-
-  /*--- MPI status and request arrays for non-blocking communications ---*/
-
-  SU2_MPI::Status status, status_;
-
 
 #endif
   
@@ -2227,19 +1921,19 @@ void CEulerSolver::Set_MPI_Interface(CGeometry *geometry, CConfig *config) {
   
   /*--- This loop gets the array sizes of points for each
    rank to send to each other rank. ---*/
-
+  
   for (iDomain = 0; iDomain < nDomain; iDomain++) {
-
+    
     /*--- Loop over the markers to perform the dimensionalizaton
      of the domain variables ---*/
-
+    
     Buffer_Send_nPointTotal = 0;
-
+    
     /*--- Loop over all of the markers and count the number of each
      type of point and element that needs to be sent. ---*/
-
+    
     for (iMarker = 0; iMarker < config->GetnMarker_All(); iMarker++) {
-      if (config->GetMarker_All_KindBC(iMarker) == INTERFACE_BOUNDARY) {
+      if (config->GetMarker_All_KindBC(iMarker) == NEARFIELD_BOUNDARY) {
         for (iVertex = 0; iVertex < geometry->nVertex[iMarker]; iVertex++) {
           iPoint = geometry->vertex[iMarker][iVertex]->GetNode();
           jDomain = geometry->vertex[iMarker][iVertex]->GetDonorProcessor();
@@ -2257,20 +1951,20 @@ void CEulerSolver::Set_MPI_Interface(CGeometry *geometry, CConfig *config) {
     /*--- Total counts for allocating send buffers below ---*/
     
     Buffer_Size_PrimVar          += nPointTotal_s[iDomain]*(nPrimVar+3);
-
+    
   }
-
+  
   /*--- Allocate the buffer vectors in the appropiate domain (master, iDomain) ---*/
-
+  
   Buffer_Send_PrimVar          = new su2double[Buffer_Size_PrimVar];
-
+  
   /*--- Now that we know the sizes of the point, we can
    allocate and send the information in large chunks to all processors. ---*/
-
+  
   for (iDomain = 0; iDomain < nDomain; iDomain++) {
-
+    
     /*--- A rank does not communicate with itself through MPI ---*/
-
+    
     if (rank != iDomain) {
       
 #ifdef HAVE_MPI
@@ -2323,34 +2017,30 @@ void CEulerSolver::Set_MPI_Interface(CGeometry *geometry, CConfig *config) {
   SU2_MPI::Barrier(MPI_COMM_WORLD);
   
 #endif
-
+  
   /*--- Initialize the counters for the larger send buffers (by domain) ---*/
-
+  
   PointTotal_Counter  = 0;
   
   for (iDomain = 0; iDomain < nDomain; iDomain++) {
-
+    
     /*--- Set the value of the interior geometry. Initialize counters. ---*/
-
+    
     iPointTotal = 0;
-
+    
     /*--- Load up the actual values into the buffers for sending. ---*/
-
+    
     for (iMarker = 0; iMarker < config->GetnMarker_All(); iMarker++) {
-
-      if (config->GetMarker_All_KindBC(iMarker) == INTERFACE_BOUNDARY) {
-
+      
+      if (config->GetMarker_All_KindBC(iMarker) == NEARFIELD_BOUNDARY) {
+        
         for (iVertex = 0; iVertex < geometry->nVertex[iMarker]; iVertex++) {
-
           iPoint = geometry->vertex[iMarker][iVertex]->GetNode();
           jDomain = geometry->vertex[iMarker][iVertex]->GetDonorProcessor();
-          
           if ((iDomain == jDomain) && (geometry->node[iPoint]->GetDomain())) {
-            
             iGlobalIndex = geometry->node[iPoint]->GetGlobalIndex();
             jVertex = geometry->vertex[iMarker][iVertex]->GetDonorVertex();
             jMarker = geometry->vertex[iMarker][iVertex]->GetDonorMarker();
-            
             for (iVar = 0; iVar < nPrimVar; iVar++) {
               Buffer_Send_PrimVar[(nPrimVar+3)*(PointTotal_Counter+iPointTotal)+iVar] = node[iPoint]->GetPrimitive(iVar);
             }
@@ -2376,77 +2066,82 @@ void CEulerSolver::Set_MPI_Interface(CGeometry *geometry, CConfig *config) {
       
       /*--- Communicate the coordinates, global index, colors, and element
        date to iDomain with non-blocking sends. ---*/
-
+      
       SU2_MPI::Bsend(&Buffer_Send_PrimVar[PointTotal_Counter*(nPrimVar+3)],
                      nPointTotal_s[iDomain]*(nPrimVar+3), MPI_DOUBLE, iDomain,
                      iDomain,  MPI_COMM_WORLD);
-
+      
 #endif
-
+      
     }
-
+    
     else {
-
+      
       /*--- Allocate local memory for the local recv of the elements ---*/
-
+      
       Buffer_Receive_PrimVar            = new su2double[nPointTotal_s[iDomain]*(nPrimVar+3)];
-
+      
       for (iter = 0; iter < nPointTotal_s[iDomain]*(nPrimVar+3); iter++)
         Buffer_Receive_PrimVar[iter] = Buffer_Send_PrimVar[PointTotal_Counter*(nPrimVar+3)+iter];
-
+      
       /*--- Recv the point data from ourselves (same procedure as above) ---*/
-
+      
       for (iPoint = 0; iPoint < nPointTotal_r[iDomain]; iPoint++) {
-
+        
         iGlobal       =  SU2_TYPE::Int(Buffer_Receive_PrimVar[iPoint*(nPrimVar+3)+(nPrimVar+0)]);
         iVertex      = SU2_TYPE::Int(Buffer_Receive_PrimVar[iPoint*(nPrimVar+3)+(nPrimVar+1)]);
         iMarker      = SU2_TYPE::Int(Buffer_Receive_PrimVar[iPoint*(nPrimVar+3)+(nPrimVar+2)]);
         for (iVar = 0; iVar < nPrimVar; iVar++)
           iPrimVar[iVar] = Buffer_Receive_PrimVar[iPoint*(nPrimVar+3)+iVar];
-
+        
         if (iVertex < 0.0) cout <<" Negative iVertex (receive)" << endl;
         if (iMarker < 0.0) cout <<" Negative iMarker (receive)" << endl;
-
+        
+        if (iMarker > nMarker) cout << "ERROR" <<  endl;
+        if (iVertex > geometry->nVertex[iMarker]) cout << "ERROR" <<  endl;
+        
         for (iVar = 0; iVar < nPrimVar; iVar++)
           SetDonorPrimVar(iMarker, iVertex, iVar, iPrimVar[iVar]);
-
+        
         SetDonorGlobalIndex(iMarker, iVertex, iGlobal);
-
+        
       }
-
+      
       /*--- Delete memory for recv the point stuff ---*/
-
+      
       delete [] Buffer_Receive_PrimVar;
-
+      
     }
-
+    
     /*--- Increment the counters for the send buffers (iDomain loop) ---*/
-
+    
     PointTotal_Counter += iPointTotal;
-
+    
   }
-
+  
   /*--- Wait for the non-blocking sends to complete. ---*/
-
+  
 #ifdef HAVE_MPI
+  
   SU2_MPI::Barrier(MPI_COMM_WORLD);
+  
 #endif
-
+  
   /*--- The next section begins the recv of all data for the interior
    points/elements in the mesh. First, create the domain structures for
    the points on this rank. First, we recv all of the point data ---*/
-
+  
   for (iDomain = 0; iDomain < size; iDomain++) {
-
+    
     if (rank != iDomain) {
-
+      
 #ifdef HAVE_MPI
-
+      
       /*--- Allocate the receive buffer vector. Send the colors so that we
        know whether what we recv is an owned or halo node. ---*/
-
+      
       Buffer_Receive_PrimVar            = new su2double [nPointTotal_r[iDomain]*(nPrimVar+3)];
-
+      
       /*--- Receive the buffers with the coords, global index, and colors ---*/
       
       SU2_MPI::Recv(Buffer_Receive_PrimVar, nPointTotal_r[iDomain]*(nPrimVar+3) , MPI_DOUBLE,
@@ -2462,48 +2157,48 @@ void CEulerSolver::Set_MPI_Interface(CGeometry *geometry, CConfig *config) {
         iMarker      = SU2_TYPE::Int(Buffer_Receive_PrimVar[iPoint*(nPrimVar+3)+(nPrimVar+2)]);
         for (iVar = 0; iVar < nPrimVar; iVar++)
           iPrimVar[iVar] = Buffer_Receive_PrimVar[iPoint*(nPrimVar+3)+iVar];
-
+        
         if (iVertex < 0.0) cout <<" Negative iVertex (receive)" << endl;
         if (iMarker < 0.0) cout <<" Negative iMarker (receive)" << endl;
-
+        
         if (iMarker > nMarker) cout << "ERROR" <<  endl;
         if (iVertex > geometry->nVertex[iMarker]) cout << "ERROR" <<  endl;
-
+        
         for (iVar = 0; iVar < nPrimVar; iVar++)
           SetDonorPrimVar(iMarker, iVertex, iVar, iPrimVar[iVar]);
-
+        
         SetDonorGlobalIndex(iMarker, iVertex, iGlobal);
-
+        
       }
-
+      
       /*--- Delete memory for recv the point stuff ---*/
-
+      
       delete [] Buffer_Receive_PrimVar;
-
+      
 #endif
-
+      
     }
-
+    
   }
-
+  
   /*--- Wait for the non-blocking sends to complete. ---*/
-
+  
 #ifdef HAVE_MPI
-
+  
   SU2_MPI::Barrier(MPI_COMM_WORLD);
-
+  
 #endif
-
+  
   /*--- Free all of the memory used for communicating points and elements ---*/
-
+  
   delete[] Buffer_Send_PrimVar;
-
+  
   /*--- Release all of the temporary memory ---*/
-
+  
   delete [] nPointTotal_s;
   delete [] nPointTotal_r;
   delete [] iPrimVar;
-
+  
 }
 
 void CEulerSolver::SetNondimensionalization(CConfig *config, unsigned short iMesh) {
@@ -2519,7 +2214,7 @@ void CEulerSolver::SetNondimensionalization(CConfig *config, unsigned short iMes
   Temperature_FreeStreamND = 0.0, Gas_ConstantND = 0.0,
   Velocity_FreeStreamND[3] = {0.0, 0.0, 0.0}, Viscosity_FreeStreamND = 0.0,
   Tke_FreeStreamND = 0.0, Energy_FreeStreamND = 0.0,
-  Total_UnstTimeND = 0.0, Delta_UnstTimeND = 0.0, TgammaR = 0.0;
+  Total_UnstTimeND = 0.0, Delta_UnstTimeND = 0.0, TgammaR = 0.0, Heat_Flux_Ref = 0.0;
 
   unsigned short iDim;
 
@@ -2559,74 +2254,74 @@ void CEulerSolver::SetNondimensionalization(CConfig *config, unsigned short iMes
 
   switch (config->GetKind_FluidModel()) {
 
-    case STANDARD_AIR:
+  case STANDARD_AIR:
 
-      if (config->GetSystemMeasurements() == SI) config->SetGas_Constant(287.058);
-      else if (config->GetSystemMeasurements() == US) config->SetGas_Constant(1716.49);
+    if (config->GetSystemMeasurements() == SI) config->SetGas_Constant(287.058);
+    else if (config->GetSystemMeasurements() == US) config->SetGas_Constant(1716.49);
 
-      FluidModel = new CIdealGas(1.4, config->GetGas_Constant());
-      if (free_stream_temp) {
-        if (aeroelastic) {
-          Temperature_FreeStream = TgammaR / (config->GetGas_Constant()*1.4);
-          config->SetTemperature_FreeStream(Temperature_FreeStream);
-        }
-        FluidModel->SetTDState_PT(Pressure_FreeStream, Temperature_FreeStream);
-        Density_FreeStream = FluidModel->GetDensity();
-        config->SetDensity_FreeStream(Density_FreeStream);
-      }
-      else {
-        FluidModel->SetTDState_Prho(Pressure_FreeStream, Density_FreeStream );
-        Temperature_FreeStream = FluidModel->GetTemperature();
+    FluidModel = new CIdealGas(1.4, config->GetGas_Constant());
+    if (free_stream_temp) {
+      if (aeroelastic) {
+        Temperature_FreeStream = TgammaR / (config->GetGas_Constant()*1.4);
         config->SetTemperature_FreeStream(Temperature_FreeStream);
       }
-      break;
+      FluidModel->SetTDState_PT(Pressure_FreeStream, Temperature_FreeStream);
+      Density_FreeStream = FluidModel->GetDensity();
+      config->SetDensity_FreeStream(Density_FreeStream);
+    }
+    else {
+      FluidModel->SetTDState_Prho(Pressure_FreeStream, Density_FreeStream );
+      Temperature_FreeStream = FluidModel->GetTemperature();
+      config->SetTemperature_FreeStream(Temperature_FreeStream);
+    }
+    break;
 
-    case IDEAL_GAS:
+  case IDEAL_GAS:
 
-      FluidModel = new CIdealGas(Gamma, config->GetGas_Constant());
-      if (free_stream_temp) {
-        FluidModel->SetTDState_PT(Pressure_FreeStream, Temperature_FreeStream);
-        Density_FreeStream = FluidModel->GetDensity();
-        config->SetDensity_FreeStream(Density_FreeStream);
-      }
-      else {
-        FluidModel->SetTDState_Prho(Pressure_FreeStream, Density_FreeStream );
-        Temperature_FreeStream = FluidModel->GetTemperature();
-        config->SetTemperature_FreeStream(Temperature_FreeStream);
-      }
-      break;
+    FluidModel = new CIdealGas(Gamma, config->GetGas_Constant());
+    if (free_stream_temp) {
+      FluidModel->SetTDState_PT(Pressure_FreeStream, Temperature_FreeStream);
+      Density_FreeStream = FluidModel->GetDensity();
+      config->SetDensity_FreeStream(Density_FreeStream);
+    }
+    else {
+      FluidModel->SetTDState_Prho(Pressure_FreeStream, Density_FreeStream );
+      Temperature_FreeStream = FluidModel->GetTemperature();
+      config->SetTemperature_FreeStream(Temperature_FreeStream);
+    }
+    break;
 
-    case VW_GAS:
+  case VW_GAS:
 
-      FluidModel = new CVanDerWaalsGas(Gamma, config->GetGas_Constant(),
-                                       config->GetPressure_Critical(), config->GetTemperature_Critical());
-      if (free_stream_temp) {
-        FluidModel->SetTDState_PT(Pressure_FreeStream, Temperature_FreeStream);
-        Density_FreeStream = FluidModel->GetDensity();
-        config->SetDensity_FreeStream(Density_FreeStream);
-      }
-      else {
-        FluidModel->SetTDState_Prho(Pressure_FreeStream, Density_FreeStream );
-        Temperature_FreeStream = FluidModel->GetTemperature();
-        config->SetTemperature_FreeStream(Temperature_FreeStream);
-      }
-      break;
+    FluidModel = new CVanDerWaalsGas(Gamma, config->GetGas_Constant(),
+                                     config->GetPressure_Critical(), config->GetTemperature_Critical());
+    if (free_stream_temp) {
+      FluidModel->SetTDState_PT(Pressure_FreeStream, Temperature_FreeStream);
+      Density_FreeStream = FluidModel->GetDensity();
+      config->SetDensity_FreeStream(Density_FreeStream);
+    }
+    else {
+      FluidModel->SetTDState_Prho(Pressure_FreeStream, Density_FreeStream );
+      Temperature_FreeStream = FluidModel->GetTemperature();
+      config->SetTemperature_FreeStream(Temperature_FreeStream);
+    }
+    break;
 
-    case PR_GAS:
+  case PR_GAS:
 
-      FluidModel = new CPengRobinson(Gamma, config->GetGas_Constant(), config->GetPressure_Critical(),
-                                     config->GetTemperature_Critical(), config->GetAcentric_Factor());
-      if (free_stream_temp) {
-        FluidModel->SetTDState_PT(Pressure_FreeStream, Temperature_FreeStream);
-        Density_FreeStream = FluidModel->GetDensity();
-        config->SetDensity_FreeStream(Density_FreeStream);
-      }
-      else {
-        FluidModel->SetTDState_Prho(Pressure_FreeStream, Density_FreeStream );
-        Temperature_FreeStream = FluidModel->GetTemperature();
-        config->SetTemperature_FreeStream(Temperature_FreeStream);
-      }
-      break;
+    FluidModel = new CPengRobinson(Gamma, config->GetGas_Constant(), config->GetPressure_Critical(),
+                                   config->GetTemperature_Critical(), config->GetAcentric_Factor());
+    if (free_stream_temp) {
+      FluidModel->SetTDState_PT(Pressure_FreeStream, Temperature_FreeStream);
+      Density_FreeStream = FluidModel->GetDensity();
+      config->SetDensity_FreeStream(Density_FreeStream);
+    }
+    else {
+      FluidModel->SetTDState_Prho(Pressure_FreeStream, Density_FreeStream );
+      Temperature_FreeStream = FluidModel->GetTemperature();
+      config->SetTemperature_FreeStream(Temperature_FreeStream);
+    }
+    break;
 
   }
 
@@ -2754,6 +2449,7 @@ void CEulerSolver::SetNondimensionalization(CConfig *config, unsigned short iMes
   Time_Ref          = Length_Ref/Velocity_Ref;                                     config->SetTime_Ref(Time_Ref);
   Omega_Ref         = Velocity_Ref/Length_Ref;                                     config->SetOmega_Ref(Omega_Ref);
   Force_Ref         = config->GetDensity_Ref()*Velocity_Ref*Velocity_Ref*Length_Ref*Length_Ref; config->SetForce_Ref(Force_Ref);
+  Heat_Flux_Ref     = Density_Ref*Velocity_Ref*Velocity_Ref*Velocity_Ref;           config->SetHeat_Flux_Ref(Heat_Flux_Ref);
   Gas_Constant_Ref  = Velocity_Ref*Velocity_Ref/config->GetTemperature_Ref();      config->SetGas_Constant_Ref(Gas_Constant_Ref);
   Viscosity_Ref     = config->GetDensity_Ref()*Velocity_Ref*Length_Ref;            config->SetViscosity_Ref(Viscosity_Ref);
   Conductivity_Ref  = Viscosity_Ref*Gas_Constant_Ref;                              config->SetConductivity_Ref(Conductivity_Ref);
@@ -2799,27 +2495,27 @@ void CEulerSolver::SetNondimensionalization(CConfig *config, unsigned short iMes
 
   switch (config->GetKind_FluidModel()) {
 
-    case STANDARD_AIR:
-      FluidModel = new CIdealGas(1.4, Gas_ConstantND);
-      FluidModel->SetEnergy_Prho(Pressure_FreeStreamND, Density_FreeStreamND);
-      break;
+  case STANDARD_AIR:
+    FluidModel = new CIdealGas(1.4, Gas_ConstantND);
+    FluidModel->SetEnergy_Prho(Pressure_FreeStreamND, Density_FreeStreamND);
+    break;
 
-    case IDEAL_GAS:
-      FluidModel = new CIdealGas(Gamma, Gas_ConstantND);
-      FluidModel->SetEnergy_Prho(Pressure_FreeStreamND, Density_FreeStreamND);
-      break;
+  case IDEAL_GAS:
+    FluidModel = new CIdealGas(Gamma, Gas_ConstantND);
+    FluidModel->SetEnergy_Prho(Pressure_FreeStreamND, Density_FreeStreamND);
+    break;
 
-    case VW_GAS:
-      FluidModel = new CVanDerWaalsGas(Gamma, Gas_ConstantND, config->GetPressure_Critical() /config->GetPressure_Ref(),
-                                       config->GetTemperature_Critical()/config->GetTemperature_Ref());
-      FluidModel->SetEnergy_Prho(Pressure_FreeStreamND, Density_FreeStreamND);
-      break;
+  case VW_GAS:
+    FluidModel = new CVanDerWaalsGas(Gamma, Gas_ConstantND, config->GetPressure_Critical() /config->GetPressure_Ref(),
+                                     config->GetTemperature_Critical()/config->GetTemperature_Ref());
+    FluidModel->SetEnergy_Prho(Pressure_FreeStreamND, Density_FreeStreamND);
+    break;
 
-    case PR_GAS:
-      FluidModel = new CPengRobinson(Gamma, Gas_ConstantND, config->GetPressure_Critical() /config->GetPressure_Ref(),
-                                     config->GetTemperature_Critical()/config->GetTemperature_Ref(), config->GetAcentric_Factor());
-      FluidModel->SetEnergy_Prho(Pressure_FreeStreamND, Density_FreeStreamND);
-      break;
+  case PR_GAS:
+    FluidModel = new CPengRobinson(Gamma, Gas_ConstantND, config->GetPressure_Critical() /config->GetPressure_Ref(),
+                                   config->GetTemperature_Critical()/config->GetTemperature_Ref(), config->GetAcentric_Factor());
+    FluidModel->SetEnergy_Prho(Pressure_FreeStreamND, Density_FreeStreamND);
+    break;
 
   }
 
@@ -2852,9 +2548,9 @@ void CEulerSolver::SetNondimensionalization(CConfig *config, unsigned short iMes
   Delta_UnstTimeND = config->GetDelta_UnstTime() / Time_Ref;    config->SetDelta_UnstTimeND(Delta_UnstTimeND);
 
   /*--- Write output to the console if this is the master node and first domain ---*/
-
-  if ((rank == MASTER_NODE) && (iMesh == MESH_0)) {
-
+  
+  if ((rank == MASTER_NODE) && (MGLevel == MESH_0)) {
+    
     cout.precision(6);
 
     if (viscous) {
@@ -2868,9 +2564,9 @@ void CEulerSolver::SetNondimensionalization(CConfig *config, unsigned short iMes
 
     if (grid_movement) cout << "Force coefficients computed using MACH_MOTION." << endl;
     else cout << "Force coefficients computed using free-stream values." << endl;
-        
+
     stringstream NonDimTableOut, ModelTableOut;
-    stringstream Unit;  
+    stringstream Unit;
     
     cout << endl;
     PrintingToolbox::CTablePrinter ModelTable(&ModelTableOut);
@@ -2882,7 +2578,7 @@ void CEulerSolver::SetNondimensionalization(CConfig *config, unsigned short iMes
     ModelTable.SetAlign(PrintingToolbox::CTablePrinter::RIGHT);
     ModelTable.PrintHeader();
     
-    PrintingToolbox::CTablePrinter NonDimTable(&NonDimTableOut);    
+    PrintingToolbox::CTablePrinter NonDimTable(&NonDimTableOut);
     NonDimTable.AddColumn("Name", 22);
     NonDimTable.AddColumn("Dim. value", 14);
     NonDimTable.AddColumn("Ref. value", 14);
@@ -2907,7 +2603,7 @@ void CEulerSolver::SetNondimensionalization(CConfig *config, unsigned short iMes
         break;
         
       case SUTHERLAND:
-        ModelTable << "SUTHERLAND";        
+        ModelTable << "SUTHERLAND";
         if      (config->GetSystemMeasurements() == SI) Unit << "N.s/m^2";
         else if (config->GetSystemMeasurements() == US) Unit << "lbf.s/ft^2";
         NonDimTable << "Ref. Viscosity" <<  config->GetMu_Ref() <<  config->GetViscosity_Ref() << Unit.str() << config->GetMu_RefND();
@@ -2927,9 +2623,9 @@ void CEulerSolver::SetNondimensionalization(CConfig *config, unsigned short iMes
       switch(config->GetKind_ConductivityModel()){
       case CONSTANT_PRANDTL:
         ModelTable << "CONSTANT_PRANDTL";
-        NonDimTable << "Prandtl (Lam.)"  << "-" << "-" << "-" << config->GetPrandtl_Lam();         
+        NonDimTable << "Prandtl (Lam.)"  << "-" << "-" << "-" << config->GetPrandtl_Lam();
         Unit.str("");
-        NonDimTable << "Prandtl (Turb.)" << "-" << "-" << "-" << config->GetPrandtl_Turb();         
+        NonDimTable << "Prandtl (Turb.)" << "-" << "-" << "-" << config->GetPrandtl_Turb();
         Unit.str("");
         NonDimTable.PrintFooter();
         break;
@@ -2937,7 +2633,7 @@ void CEulerSolver::SetNondimensionalization(CConfig *config, unsigned short iMes
       case CONSTANT_CONDUCTIVITY:
         ModelTable << "CONSTANT_CONDUCTIVITY";
         Unit << "W/m^2.K";
-        NonDimTable << "Molecular Cond." << config->GetKt_Constant() << config->GetKt_Constant()/config->GetKt_ConstantND() << Unit.str() << config->GetKt_ConstantND();         
+        NonDimTable << "Molecular Cond." << config->GetKt_Constant() << config->GetKt_Constant()/config->GetKt_ConstantND() << Unit.str() << config->GetKt_ConstantND();
         Unit.str("");
         NonDimTable.PrintFooter();
         break;
@@ -2970,13 +2666,13 @@ void CEulerSolver::SetNondimensionalization(CConfig *config, unsigned short iMes
       ModelTable << "PR_GAS";
       break;
     }
- 
+
     if (config->GetKind_FluidModel() == VW_GAS || config->GetKind_FluidModel() == PR_GAS){
-        NonDimTable << "Critical Pressure" << config->GetPressure_Critical() << config->GetPressure_Ref() << Unit.str() << config->GetPressure_Critical() /config->GetPressure_Ref();
-        Unit.str("");
-        Unit << "K";
-        NonDimTable << "Critical Temperature" << config->GetTemperature_Critical() << config->GetTemperature_Ref() << Unit.str() << config->GetTemperature_Critical() /config->GetTemperature_Ref();
-        Unit.str("");
+      NonDimTable << "Critical Pressure" << config->GetPressure_Critical() << config->GetPressure_Ref() << Unit.str() << config->GetPressure_Critical() /config->GetPressure_Ref();
+      Unit.str("");
+      Unit << "K";
+      NonDimTable << "Critical Temperature" << config->GetTemperature_Critical() << config->GetTemperature_Ref() << Unit.str() << config->GetTemperature_Critical() /config->GetTemperature_Ref();
+      Unit.str("");
     }
     NonDimTable.PrintFooter();
     
@@ -3035,18 +2731,18 @@ void CEulerSolver::SetNondimensionalization(CConfig *config, unsigned short iMes
     NonDimTable.PrintFooter();
     NonDimTable << "Mach Number" << "-" << "-" << "-" << config->GetMach();
     if (viscous) {
-      NonDimTable << "Reynolds Number" << "-" << "-" << "-" << config->GetReynolds();      
+      NonDimTable << "Reynolds Number" << "-" << "-" << "-" << config->GetReynolds();
     }
     if (gravity) {
-      NonDimTable << "Froude Number" << "-" << "-" << "-" << Froude;      
+      NonDimTable << "Froude Number" << "-" << "-" << "-" << Froude;
       NonDimTable << "Wave Length"   << "-" << "-" << "-" << 2.0*PI_NUMBER*Froude*Froude;
     }
     NonDimTable.PrintFooter();
     ModelTable.PrintFooter();
     
     if (unsteady){
+      NonDimTableOut << "-- Unsteady conditions" << endl;      
       NonDimTable.PrintHeader();
-      NonDimTableOut << "-- Unsteady conditions" << endl;
       NonDimTable << "Total Time" << config->GetTotal_UnstTime() << config->GetTime_Ref() << "s" << config->GetTotal_UnstTimeND();
       Unit.str("");
       NonDimTable << "Time Step" << config->GetDelta_UnstTime() << config->GetTime_Ref() << "s" << config->GetDelta_UnstTimeND();
@@ -3066,8 +2762,8 @@ void CEulerSolver::SetInitialCondition(CGeometry **geometry, CSolver ***solver_c
   unsigned long iPoint;
   unsigned short iMesh, iDim;
   su2double X0[3] = {0.0,0.0,0.0}, X1[3] = {0.0,0.0,0.0}, X2[3] = {0.0,0.0,0.0},
-  X1_X0[3] = {0.0,0.0,0.0}, X2_X0[3] = {0.0,0.0,0.0}, X2_X1[3] = {0.0,0.0,0.0},
-  CP[3] = {0.0,0.0,0.0}, Distance, DotCheck, Radius;
+      X1_X0[3] = {0.0,0.0,0.0}, X2_X0[3] = {0.0,0.0,0.0}, X2_X1[3] = {0.0,0.0,0.0},
+      CP[3] = {0.0,0.0,0.0}, Distance, DotCheck, Radius;
 
   unsigned short nDim = geometry[MESH_0]->GetnDim();
   bool restart = (config->GetRestart() || config->GetRestart_Flow());
@@ -3078,6 +2774,28 @@ void CEulerSolver::SetInitialCondition(CGeometry **geometry, CSolver ***solver_c
                     (config->GetUnsteady_Simulation() == DT_STEPPING_2ND));
   bool SubsonicEngine = config->GetSubsonicEngine();
 
+  /*--- Check if a verification solution is to be computed. ---*/
+  if ((VerificationSolution)  && (ExtIter == 0) && !restart) {
+
+    /*--- Loop over the multigrid levels. ---*/
+    for (iMesh = 0; iMesh <= config->GetnMGLevels(); iMesh++) {
+      
+      /*--- Loop over all grid points. ---*/
+      for (iPoint = 0; iPoint < geometry[iMesh]->GetnPoint(); iPoint++) {
+        
+        /* Set the pointers to the coordinates and solution of this DOF. */
+        const su2double *coor = geometry[iMesh]->node[iPoint]->GetCoord();
+        su2double *solDOF     = solver_container[iMesh][FLOW_SOL]->node[iPoint]->GetSolution();
+        
+        /* Set the solution in this DOF to the initial condition provided by
+           the verification solution class. This can be the exact solution,
+           but this is not necessary. */
+        VerificationSolution->GetInitialCondition(coor, solDOF);
+        
+      }
+    }
+  }
+  
   /*--- Set subsonic initial condition for engine intakes ---*/
 
   if (SubsonicEngine) {
@@ -3087,8 +2805,8 @@ void CEulerSolver::SetInitialCondition(CGeometry **geometry, CSolver ***solver_c
     if ((ExtIter == 0) && (!restart)) {
 
       su2double Velocity_Cyl[3] = {0.0, 0.0, 0.0}, Velocity_CylND[3] = {0.0, 0.0, 0.0}, Viscosity_Cyl,
-      Density_Cyl, Density_CylND, Pressure_CylND, ModVel_Cyl, ModVel_CylND, Energy_CylND,
-      T_ref = 0.0, S = 0.0, Mu_ref = 0.0, *Coord, *SubsonicEngine_Cyl, *SubsonicEngine_Values;
+          Density_Cyl, Density_CylND, Pressure_CylND, ModVel_Cyl, ModVel_CylND, Energy_CylND,
+          T_ref = 0.0, S = 0.0, Mu_ref = 0.0, *Coord, *SubsonicEngine_Cyl, *SubsonicEngine_Values;
 
       SubsonicEngine_Values = config->GetSubsonicEngine_Values();
       su2double Mach_Cyl        = SubsonicEngine_Values[0];
@@ -3260,20 +2978,19 @@ void CEulerSolver::Preprocessing(CGeometry *geometry, CSolver **solver_container
   bool disc_adjoint     = config->GetDiscrete_Adjoint();
   bool implicit         = (config->GetKind_TimeIntScheme_Flow() == EULER_IMPLICIT);
   bool muscl            = (config->GetMUSCL_Flow() || (cont_adjoint && config->GetKind_ConvNumScheme_AdjFlow() == ROE));
-  bool limiter          = ((config->GetKind_SlopeLimit_Flow() != NO_LIMITER) && (ExtIter <= config->GetLimiterIter()) && !(disc_adjoint && config->GetFrozen_Limiter_Disc()));
+  bool limiter          = (config->GetKind_SlopeLimit_Flow() != NO_LIMITER) && (ExtIter <= config->GetLimiterIter());
   bool center           = (config->GetKind_ConvNumScheme_Flow() == SPACE_CENTERED) || (cont_adjoint && config->GetKind_ConvNumScheme_AdjFlow() == SPACE_CENTERED);
   bool center_jst       = center && (config->GetKind_Centered_Flow() == JST);
   bool engine           = ((config->GetnMarker_EngineInflow() != 0) || (config->GetnMarker_EngineExhaust() != 0));
   bool actuator_disk    = ((config->GetnMarker_ActDiskInlet() != 0) || (config->GetnMarker_ActDiskOutlet() != 0));
   bool nearfield        = (config->GetnMarker_NearFieldBound() != 0);
-  bool interface        = (config->GetnMarker_InterfaceBound() != 0);
   bool fixed_cl         = config->GetFixed_CL_Mode();
   bool van_albada       = config->GetKind_SlopeLimit_Flow() == VAN_ALBADA_EDGE;
   unsigned short kind_row_dissipation = config->GetKind_RoeLowDiss();
   bool roe_low_dissipation  = (kind_row_dissipation != NO_ROELOWDISS) &&
-                              (config->GetKind_Upwind_Flow() == ROE ||
-                               config->GetKind_Upwind_Flow() == SLAU ||
-                               config->GetKind_Upwind_Flow() == SLAU2);
+      (config->GetKind_Upwind_Flow() == ROE ||
+       config->GetKind_Upwind_Flow() == SLAU ||
+       config->GetKind_Upwind_Flow() == SLAU2);
 
   /*--- Update the angle of attack at the far-field for fixed CL calculations (only direct problem). ---*/
   
@@ -3294,10 +3011,6 @@ void CEulerSolver::Preprocessing(CGeometry *geometry, CSolver **solver_container
     GetPower_Properties(geometry, config, iMesh, Output);
     SetActDisk_BCThrust(geometry, solver_container, config, iMesh, Output);
   }
-
-  /*--- Compute Interface MPI ---*/
-
-  if (interface) { Set_MPI_Interface(geometry, config); }
 
   /*--- Compute NearField MPI ---*/
 
@@ -3393,13 +3106,13 @@ void CEulerSolver::SetTime_Step(CGeometry *geometry, CSolver **solver_container,
                                 unsigned short iMesh, unsigned long Iteration) {
 
   su2double *Normal, Area, Vol, Mean_SoundSpeed = 0.0, Mean_ProjVel = 0.0, Lambda, Local_Delta_Time,
-  Global_Delta_Time = 1E6, Global_Delta_UnstTimeND, ProjVel, ProjVel_i, ProjVel_j;
+      Global_Delta_Time = 1E6, Global_Delta_UnstTimeND, ProjVel, ProjVel_i, ProjVel_j;
   unsigned long iEdge, iVertex, iPoint, jPoint;
   unsigned short iDim, iMarker;
 
   bool implicit = (config->GetKind_TimeIntScheme_Flow() == EULER_IMPLICIT);
   bool grid_movement = config->GetGrid_Movement();
-    bool time_steping = config->GetUnsteady_Simulation() == TIME_STEPPING;
+  bool time_steping = config->GetUnsteady_Simulation() == TIME_STEPPING;
   bool dual_time = ((config->GetUnsteady_Simulation() == DT_STEPPING_1ST) ||
                     (config->GetUnsteady_Simulation() == DT_STEPPING_2ND));
 
@@ -3453,20 +3166,20 @@ void CEulerSolver::SetTime_Step(CGeometry *geometry, CSolver **solver_container,
     if ((config->GetMarker_All_KindBC(iMarker) != INTERNAL_BOUNDARY) &&
         (config->GetMarker_All_KindBC(iMarker) != PERIODIC_BOUNDARY)) {
     for (iVertex = 0; iVertex < geometry->GetnVertex(iMarker); iVertex++) {
-
+      
       /*--- Point identification, Normal vector and area ---*/
-
+      
       iPoint = geometry->vertex[iMarker][iVertex]->GetNode();
       Normal = geometry->vertex[iMarker][iVertex]->GetNormal();
       Area = 0.0; for (iDim = 0; iDim < nDim; iDim++) Area += Normal[iDim]*Normal[iDim]; Area = sqrt(Area);
-
+      
       /*--- Mean Values ---*/
-
+      
       Mean_ProjVel = node[iPoint]->GetProjVel(Normal);
       Mean_SoundSpeed = node[iPoint]->GetSoundSpeed() * Area;
 
       /*--- Adjustment for grid movement ---*/
-
+      
       if (grid_movement) {
         su2double *GridVel = geometry->node[iPoint]->GetGridVel();
         ProjVel = 0.0;
@@ -3474,7 +3187,7 @@ void CEulerSolver::SetTime_Step(CGeometry *geometry, CSolver **solver_container,
           ProjVel += GridVel[iDim]*Normal[iDim];
         Mean_ProjVel -= ProjVel;
       }
-
+      
       /*--- Inviscid contribution ---*/
       Lambda = fabs(Mean_ProjVel) + Mean_SoundSpeed;
       if (geometry->node[iPoint]->GetDomain()) {
@@ -3534,17 +3247,17 @@ void CEulerSolver::SetTime_Step(CGeometry *geometry, CSolver **solver_container,
 #endif
     for (iPoint = 0; iPoint < nPointDomain; iPoint++) {
 
-            /*--- Sets the regular CFL equal to the unsteady CFL ---*/
-            config->SetCFL(iMesh,config->GetUnst_CFL());
+      /*--- Sets the regular CFL equal to the unsteady CFL ---*/
+      config->SetCFL(iMesh,config->GetUnst_CFL());
 
-            /*--- If the unsteady CFL is set to zero, it uses the defined unsteady time step, otherwise
+      /*--- If the unsteady CFL is set to zero, it uses the defined unsteady time step, otherwise
              it computes the time step based on the unsteady CFL ---*/
-            if (config->GetCFL(iMesh) == 0.0) {
-                node[iPoint]->SetDelta_Time(config->GetDelta_UnstTime());
-            } else {
-                node[iPoint]->SetDelta_Time(Global_Delta_Time);
-            }
-        }
+      if (config->GetCFL(iMesh) == 0.0) {
+        node[iPoint]->SetDelta_Time(config->GetDelta_UnstTime());
+      } else {
+        node[iPoint]->SetDelta_Time(Global_Delta_Time);
+      }
+    }
   }
 
   /*--- Recompute the unsteady time step for the dual time strategy
@@ -3637,7 +3350,7 @@ void CEulerSolver::Upwind_Residual(CGeometry *geometry, CSolver **solver_contain
                                    CConfig *config, unsigned short iMesh) {
 
   su2double **Gradient_i, **Gradient_j, Project_Grad_i, Project_Grad_j, RoeVelocity[3] = {0.0,0.0,0.0}, R, sq_vel, RoeEnthalpy,
-  *V_i, *V_j, *S_i, *S_j, *Limiter_i = NULL, *Limiter_j = NULL, sqvel, Non_Physical = 1.0, Sensor_i, Sensor_j, Dissipation_i, Dissipation_j, *Coord_i, *Coord_j;
+      *V_i, *V_j, *S_i, *S_j, *Limiter_i = NULL, *Limiter_j = NULL, sqvel, Non_Physical = 1.0, Sensor_i, Sensor_j, Dissipation_i, Dissipation_j, *Coord_i, *Coord_j;
 
   su2double z, velocity2_i, velocity2_j, mach_i, mach_j, vel_i_corr[3], vel_j_corr[3];
 
@@ -3649,8 +3362,7 @@ void CEulerSolver::Upwind_Residual(CGeometry *geometry, CSolver **solver_contain
   unsigned long ExtIter = config->GetExtIter();
   bool implicit         = (config->GetKind_TimeIntScheme_Flow() == EULER_IMPLICIT);
   bool muscl            = (config->GetMUSCL_Flow() && (iMesh == MESH_0));
-  bool disc_adjoint     = config->GetDiscrete_Adjoint();
-  bool limiter          = ((config->GetKind_SlopeLimit_Flow() != NO_LIMITER) && (ExtIter <= config->GetLimiterIter()) && !(disc_adjoint && config->GetFrozen_Limiter_Disc()));
+  bool limiter          = (config->GetKind_SlopeLimit_Flow() != NO_LIMITER) && (ExtIter <= config->GetLimiterIter());
   bool grid_movement    = config->GetGrid_Movement();
   bool roe_turkel       = (config->GetKind_Upwind_Flow() == TURKEL);
   bool ideal_gas        = (config->GetKind_FluidModel() == STANDARD_AIR || config->GetKind_FluidModel() == IDEAL_GAS );
@@ -3747,9 +3459,9 @@ void CEulerSolver::Upwind_Residual(CGeometry *geometry, CSolver **solver_contain
         velocity2_j = 0.0;
         for (iDim = 0; iDim < nDim; iDim++) {
           vel_i_corr[iDim] = ( Primitive_i[iDim+1] + Primitive_j[iDim+1] )/2.0 \
-                  + z * ( Primitive_i[iDim+1] - Primitive_j[iDim+1] )/2.0;
+              + z * ( Primitive_i[iDim+1] - Primitive_j[iDim+1] )/2.0;
           vel_j_corr[iDim] = ( Primitive_i[iDim+1] + Primitive_j[iDim+1] )/2.0 \
-                  + z * ( Primitive_j[iDim+1] - Primitive_i[iDim+1] )/2.0;
+              + z * ( Primitive_j[iDim+1] - Primitive_i[iDim+1] )/2.0;
 
           velocity2_j += vel_j_corr[iDim]*vel_j_corr[iDim];
           velocity2_i += vel_i_corr[iDim]*vel_i_corr[iDim];
@@ -4092,7 +3804,41 @@ void CEulerSolver::Source_Residual(CGeometry *geometry, CSolver **solver_contain
 
     }
   }
-
+  
+  /*--- Check if a verification solution is to be computed. ---*/
+  
+  if ( VerificationSolution ) {
+    if ( VerificationSolution->IsManufacturedSolution() ) {
+      
+      /*--- Get the physical time. ---*/
+      su2double time = 0.0;
+      if (config->GetUnsteady_Simulation()) time = config->GetPhysicalTime();
+      
+      /*--- Loop over points ---*/
+      for (iPoint = 0; iPoint < nPointDomain; iPoint++) {
+        
+        /*--- Get control volume size. ---*/
+        su2double Volume = geometry->node[iPoint]->GetVolume();
+        
+        /*--- Get the current point coordinates. ---*/
+        const su2double *coor = geometry->node[iPoint]->GetCoord();
+        
+        /*--- Get the MMS source term. ---*/
+        vector<su2double> sourceMan(nVar,0.0);
+        VerificationSolution->GetMMSSourceTerm(coor, time, sourceMan.data());
+        
+        /*--- Compute the residual for this control volume. ---*/
+        for (iVar = 0; iVar < nVar; iVar++) {
+          Residual[iVar] = sourceMan[iVar]*Volume;
+        }
+        
+        /*--- Subtract Residual ---*/
+        LinSysRes.SubtractBlock(iPoint, Residual);
+        
+      }
+    }
+  }
+  
 }
 
 void CEulerSolver::Source_Template(CGeometry *geometry, CSolver **solver_container, CNumerics *numerics,
@@ -4112,7 +3858,7 @@ void CEulerSolver::Source_Template(CGeometry *geometry, CSolver **solver_contain
 void CEulerSolver::SetMax_Eigenvalue(CGeometry *geometry, CConfig *config) {
 
   su2double *Normal, Area, Mean_SoundSpeed = 0.0, Mean_ProjVel = 0.0, Lambda,
-  ProjVel, ProjVel_i, ProjVel_j, *GridVel, *GridVel_i, *GridVel_j;
+      ProjVel, ProjVel_i, ProjVel_j, *GridVel, *GridVel_i, *GridVel_j;
   unsigned long iEdge, iVertex, iPoint, jPoint;
   unsigned short iDim, iMarker;
 
@@ -4168,20 +3914,20 @@ void CEulerSolver::SetMax_Eigenvalue(CGeometry *geometry, CConfig *config) {
     if ((config->GetMarker_All_KindBC(iMarker) != INTERNAL_BOUNDARY) &&
         (config->GetMarker_All_KindBC(iMarker) != PERIODIC_BOUNDARY)) {
     for (iVertex = 0; iVertex < geometry->GetnVertex(iMarker); iVertex++) {
-
+      
       /*--- Point identification, Normal vector and area ---*/
-
+      
       iPoint = geometry->vertex[iMarker][iVertex]->GetNode();
       Normal = geometry->vertex[iMarker][iVertex]->GetNormal();
       Area = 0.0; for (iDim = 0; iDim < nDim; iDim++) Area += Normal[iDim]*Normal[iDim]; Area = sqrt(Area);
-
+      
       /*--- Mean Values ---*/
-
+      
       Mean_ProjVel = node[iPoint]->GetProjVel(Normal);
       Mean_SoundSpeed = node[iPoint]->GetSoundSpeed() * Area;
 
       /*--- Adjustment for grid movement ---*/
-
+      
       if (grid_movement) {
         GridVel = geometry->node[iPoint]->GetGridVel();
         ProjVel = 0.0;
@@ -4189,9 +3935,9 @@ void CEulerSolver::SetMax_Eigenvalue(CGeometry *geometry, CConfig *config) {
           ProjVel += GridVel[iDim]*Normal[iDim];
         Mean_ProjVel -= ProjVel;
       }
-
+      
       /*--- Inviscid contribution ---*/
-
+      
       Lambda = fabs(Mean_ProjVel) + Mean_SoundSpeed;
       if (geometry->node[iPoint]->GetDomain()) {
         node[iPoint]->AddLambda(Lambda);
@@ -4423,8 +4169,8 @@ void CEulerSolver::Pressure_Forces(CGeometry *geometry, CConfig *config) {
   unsigned long iVertex, iPoint;
   unsigned short iDim, iMarker, Boundary, Monitoring, iMarker_Monitoring;
   su2double Pressure = 0.0, *Normal = NULL, MomentDist[3] = {0.0,0.0,0.0}, *Coord,
-  factor, NFPressOF, RefVel2, RefTemp, RefDensity, RefPressure, Mach2Vel, Mach_Motion,
-  Force[3] = {0.0,0.0,0.0};
+      factor, NFPressOF, RefVel2, RefTemp, RefDensity, RefPressure, Mach2Vel, Mach_Motion,
+      Force[3] = {0.0,0.0,0.0};
   string Marker_Tag, Monitoring_Tag;
   su2double MomentX_Force[3] = {0.0,0.0,0.0}, MomentY_Force[3] = {0.0,0.0,0.0}, MomentZ_Force[3] = {0.0,0.0,0.0};
   su2double AxiFactor;
@@ -4824,22 +4570,22 @@ void CEulerSolver::Momentum_Forces(CGeometry *geometry, CConfig *config) {
   unsigned long iVertex, iPoint;
   unsigned short iDim, iMarker, Boundary, Monitoring, iMarker_Monitoring;
   su2double *Normal = NULL, MomentDist[3] = {0.0,0.0,0.0}, *Coord, Area,
-  factor, RefVel2, RefTemp, RefDensity,  Mach2Vel, Mach_Motion,
-  Force[3] = {0.0,0.0,0.0}, Velocity[3], MassFlow, Density;
+      factor, RefVel2, RefTemp, RefDensity,  Mach2Vel, Mach_Motion,
+      Force[3] = {0.0,0.0,0.0}, Velocity[3], MassFlow, Density;
   string Marker_Tag, Monitoring_Tag;
   su2double MomentX_Force[3] = {0.0,0.0,0.0}, MomentY_Force[3] = {0.0,0.0,0.0}, MomentZ_Force[3] = {0.0,0.0,0.0};
   su2double AxiFactor;
 
 #ifdef HAVE_MPI
   su2double MyAllBound_CD_Mnt, MyAllBound_CL_Mnt, MyAllBound_CSF_Mnt,
-  MyAllBound_CMx_Mnt, MyAllBound_CMy_Mnt, MyAllBound_CMz_Mnt,
-  MyAllBound_CoPx_Mnt, MyAllBound_CoPy_Mnt, MyAllBound_CoPz_Mnt,
-  MyAllBound_CFx_Mnt, MyAllBound_CFy_Mnt, MyAllBound_CFz_Mnt, MyAllBound_CT_Mnt,
-  MyAllBound_CQ_Mnt,
-  *MySurface_CL_Mnt = NULL, *MySurface_CD_Mnt = NULL, *MySurface_CSF_Mnt = NULL,
-  *MySurface_CEff_Mnt = NULL, *MySurface_CFx_Mnt = NULL, *MySurface_CFy_Mnt = NULL,
-  *MySurface_CFz_Mnt = NULL,
-  *MySurface_CMx_Mnt = NULL, *MySurface_CMy_Mnt = NULL,  *MySurface_CMz_Mnt = NULL;
+      MyAllBound_CMx_Mnt, MyAllBound_CMy_Mnt, MyAllBound_CMz_Mnt,
+      MyAllBound_CoPx_Mnt, MyAllBound_CoPy_Mnt, MyAllBound_CoPz_Mnt,
+      MyAllBound_CFx_Mnt, MyAllBound_CFy_Mnt, MyAllBound_CFz_Mnt, MyAllBound_CT_Mnt,
+      MyAllBound_CQ_Mnt,
+      *MySurface_CL_Mnt = NULL, *MySurface_CD_Mnt = NULL, *MySurface_CSF_Mnt = NULL,
+      *MySurface_CEff_Mnt = NULL, *MySurface_CFx_Mnt = NULL, *MySurface_CFy_Mnt = NULL,
+      *MySurface_CFz_Mnt = NULL,
+      *MySurface_CMx_Mnt = NULL, *MySurface_CMy_Mnt = NULL,  *MySurface_CMz_Mnt = NULL;
 #endif
 
   su2double Alpha            = config->GetAoA()*PI_NUMBER/180.0;
@@ -5238,12 +4984,15 @@ void CEulerSolver::ExplicitRK_Iteration(CGeometry *geometry, CSolver **solver_co
   /*--- Compute the root mean square residual ---*/
 
   SetResidual_RMS(geometry, config);
-
-
+  
+  /*--- For verification cases, compute the global error metrics. ---*/
+  
+  ComputeVerificationError(geometry, config);
+  
 }
 
 void CEulerSolver::ClassicalRK4_Iteration(CGeometry *geometry, CSolver **solver_container,
-                                        CConfig *config, unsigned short iRKStep) {
+                                          CConfig *config, unsigned short iRKStep) {
   su2double *Residual, *Res_TruncError, Vol, Delta, Res, tmp_time, tmp_func;
   unsigned short iVar;
   unsigned long iPoint;
@@ -5302,6 +5051,10 @@ void CEulerSolver::ClassicalRK4_Iteration(CGeometry *geometry, CSolver **solver_
 
   SetResidual_RMS(geometry, config);
 
+  /*--- For verification cases, compute the global error metrics. ---*/
+  
+  ComputeVerificationError(geometry, config);
+  
 }
 
 void CEulerSolver::ExplicitEuler_Iteration(CGeometry *geometry, CSolver **solver_container, CConfig *config) {
@@ -5325,7 +5078,6 @@ void CEulerSolver::ExplicitEuler_Iteration(CGeometry *geometry, CSolver **solver
 
     local_Res_TruncError = node[iPoint]->GetResTruncError();
     local_Residual = LinSysRes.GetBlock(iPoint);
-
     if (!adjoint) {
       for (iVar = 0; iVar < nVar; iVar++) {
         Res = local_Residual[iVar] + local_Res_TruncError[iVar];
@@ -5345,7 +5097,11 @@ void CEulerSolver::ExplicitEuler_Iteration(CGeometry *geometry, CSolver **solver
   /*--- Compute the root mean square residual ---*/
 
   SetResidual_RMS(geometry, config);
-
+  
+  /*--- For verification cases, compute the global error metrics. ---*/
+  
+  ComputeVerificationError(geometry, config);
+  
 }
 
 void CEulerSolver::ImplicitEuler_Iteration(CGeometry *geometry, CSolver **solver_container, CConfig *config) {
@@ -5455,14 +5211,18 @@ void CEulerSolver::ImplicitEuler_Iteration(CGeometry *geometry, CSolver **solver
   /*--- Compute the root mean square residual ---*/
 
   SetResidual_RMS(geometry, config);
-
+  
+  /*--- For verification cases, compute the global error metrics. ---*/
+  
+  ComputeVerificationError(geometry, config);
+  
 }
 
 void CEulerSolver::SetPrimitive_Gradient_GG(CGeometry *geometry, CConfig *config) {
   unsigned long iPoint, jPoint, iEdge, iVertex;
   unsigned short iDim, iVar, iMarker;
   su2double *PrimVar_Vertex, *PrimVar_i, *PrimVar_j, PrimVar_Average,
-  Partial_Gradient, Partial_Res, *Normal, Vol;
+      Partial_Gradient, Partial_Res, *Normal, Vol;
 
   /*--- Gradient primitive variables compressible (temp, vx, vy, vz, P, rho) ---*/
 
@@ -5507,10 +5267,10 @@ void CEulerSolver::SetPrimitive_Gradient_GG(CGeometry *geometry, CConfig *config
     for (iVertex = 0; iVertex < geometry->GetnVertex(iMarker); iVertex++) {
       iPoint = geometry->vertex[iMarker][iVertex]->GetNode();
       if (geometry->node[iPoint]->GetDomain()) {
-
+        
         for (iVar = 0; iVar < nPrimVarGrad; iVar++)
           PrimVar_Vertex[iVar] = node[iPoint]->GetPrimitive(iVar);
-
+        
         Normal = geometry->vertex[iMarker][iVertex]->GetNormal();
         for (iVar = 0; iVar < nPrimVarGrad; iVar++)
           for (iDim = 0; iDim < nDim; iDim++) {
@@ -5738,10 +5498,21 @@ void CEulerSolver::SetPrimitive_Limiter(CGeometry *geometry, CConfig *config) {
   unsigned long iEdge, iPoint, jPoint;
   unsigned short iVar, iDim;
   su2double **Gradient_i, **Gradient_j, *Coord_i, *Coord_j,
-  *Primitive, *Primitive_i, *Primitive_j, *LocalMinPrimitive, *LocalMaxPrimitive,
-  *GlobalMinPrimitive, *GlobalMaxPrimitive,
-  dave, LimK, eps2, eps1, dm, dp, du, y, limiter;
+      *Primitive, *Primitive_i, *Primitive_j,
+      *LocalMinPrimitive = NULL, *LocalMaxPrimitive = NULL,
+      *GlobalMinPrimitive = NULL, *GlobalMaxPrimitive = NULL,
+      dave, LimK, eps2, eps1, dm, dp, du, y, limiter;
 
+#ifdef CODI_REVERSE_TYPE
+  bool TapeActive = false;
+
+  if (config->GetDiscrete_Adjoint() && config->GetFrozen_Limiter_Disc()) {
+    /*--- If limiters are frozen do not record the computation ---*/
+    TapeActive = AD::globalTape.isActive();
+    AD::StopRecording();
+  }
+#endif
+  
   dave = config->GetRefElemLength();
   LimK = config->GetVenkat_LimiterCoeff();
 
@@ -5883,34 +5654,35 @@ void CEulerSolver::SetPrimitive_Limiter(CGeometry *geometry, CConfig *config) {
 
   if ((config->GetKind_SlopeLimit_Flow() == VENKATAKRISHNAN) ||
       (config->GetKind_SlopeLimit_Flow() == VENKATAKRISHNAN_WANG)) {
-
-    /*--- Allocate memory for the max and min primitive value --*/
-
-    LocalMinPrimitive = new su2double [nPrimVarGrad]; GlobalMinPrimitive = new su2double [nPrimVarGrad];
-    LocalMaxPrimitive = new su2double [nPrimVarGrad]; GlobalMaxPrimitive = new su2double [nPrimVarGrad];
-
-    /*--- Compute the max value and min value of the solution ---*/
-
-    Primitive = node[0]->GetPrimitive();
-    for (iVar = 0; iVar < nPrimVarGrad; iVar++) {
-      LocalMinPrimitive[iVar] = Primitive[iVar];
-      LocalMaxPrimitive[iVar] = Primitive[iVar];
-    }
-
-    for (iPoint = 0; iPoint < geometry->GetnPoint(); iPoint++) {
-
-      /*--- Get the primitive variables ---*/
-
-      Primitive = node[iPoint]->GetPrimitive();
-
-      for (iVar = 0; iVar < nPrimVarGrad; iVar++) {
-        LocalMinPrimitive[iVar] = min (LocalMinPrimitive[iVar], Primitive[iVar]);
-        LocalMaxPrimitive[iVar] = max (LocalMaxPrimitive[iVar], Primitive[iVar]);
-      }
-
-    }
-
+    
     if (config->GetKind_SlopeLimit_Flow() == VENKATAKRISHNAN_WANG) {
+
+      /*--- Allocate memory for the max and min primitive value --*/
+      
+      LocalMinPrimitive = new su2double [nPrimVarGrad]; GlobalMinPrimitive = new su2double [nPrimVarGrad];
+      LocalMaxPrimitive = new su2double [nPrimVarGrad]; GlobalMaxPrimitive = new su2double [nPrimVarGrad];
+      
+      /*--- Compute the max value and min value of the solution ---*/
+      
+      Primitive = node[0]->GetPrimitive();
+      for (iVar = 0; iVar < nPrimVarGrad; iVar++) {
+        LocalMinPrimitive[iVar] = Primitive[iVar];
+        LocalMaxPrimitive[iVar] = Primitive[iVar];
+      }
+      
+      for (iPoint = 0; iPoint < geometry->GetnPoint(); iPoint++) {
+        
+        /*--- Get the primitive variables ---*/
+        
+        Primitive = node[iPoint]->GetPrimitive();
+        
+        for (iVar = 0; iVar < nPrimVarGrad; iVar++) {
+          LocalMinPrimitive[iVar] = min (LocalMinPrimitive[iVar], Primitive[iVar]);
+          LocalMaxPrimitive[iVar] = max (LocalMaxPrimitive[iVar], Primitive[iVar]);
+        }
+        
+      }
+      
 #ifdef HAVE_MPI
       SU2_MPI::Allreduce(LocalMinPrimitive, GlobalMinPrimitive, nPrimVarGrad, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
       SU2_MPI::Allreduce(LocalMaxPrimitive, GlobalMaxPrimitive, nPrimVarGrad, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
@@ -5921,9 +5693,9 @@ void CEulerSolver::SetPrimitive_Limiter(CGeometry *geometry, CConfig *config) {
       }
 #endif
     }
-
+    
     for (iEdge = 0; iEdge < geometry->GetnEdge(); iEdge++) {
-
+      
       iPoint     = geometry->edge[iEdge]->GetNode(0);
       jPoint     = geometry->edge[iEdge]->GetNode(1);
       Gradient_i = node[iPoint]->GetGradient_Primitive();
@@ -5931,15 +5703,21 @@ void CEulerSolver::SetPrimitive_Limiter(CGeometry *geometry, CConfig *config) {
       Coord_i    = geometry->node[iPoint]->GetCoord();
       Coord_j    = geometry->node[jPoint]->GetCoord();
 
-      AD::StartPreacc();
-      AD::SetPreaccIn(Gradient_i, nPrimVarGrad, nDim);
-      AD::SetPreaccIn(Gradient_j, nPrimVarGrad, nDim);
-      AD::SetPreaccIn(Coord_i, nDim); AD::SetPreaccIn(Coord_j, nDim);
-      AD::SetPreaccIn(eps2);
-
       for (iVar = 0; iVar < nPrimVarGrad; iVar++) {
 
+        AD::StartPreacc();
+        AD::SetPreaccIn(Gradient_i[iVar], nDim);
+        AD::SetPreaccIn(Gradient_j[iVar], nDim);
+        AD::SetPreaccIn(Coord_i, nDim);
+        AD::SetPreaccIn(Coord_j, nDim);
+        AD::SetPreaccIn(node[iPoint]->GetSolution_Max(iVar));
+        AD::SetPreaccIn(node[iPoint]->GetSolution_Min(iVar));
+        AD::SetPreaccIn(node[jPoint]->GetSolution_Max(iVar));
+        AD::SetPreaccIn(node[jPoint]->GetSolution_Min(iVar));
+        
         if (config->GetKind_SlopeLimit_Flow() == VENKATAKRISHNAN_WANG) {
+          AD::SetPreaccIn(GlobalMaxPrimitive[iVar]);
+          AD::SetPreaccIn(GlobalMinPrimitive[iVar]);
           eps1 = LimK * (GlobalMaxPrimitive[iVar] - GlobalMinPrimitive[iVar]);
           eps2 = eps1*eps1;
         }
@@ -5947,11 +5725,6 @@ void CEulerSolver::SetPrimitive_Limiter(CGeometry *geometry, CConfig *config) {
           eps1 = LimK*dave;
           eps2 = eps1*eps1*eps1;
         }
-
-        AD::SetPreaccIn(node[iPoint]->GetSolution_Max(iVar));
-        AD::SetPreaccIn(node[iPoint]->GetSolution_Min(iVar));
-        AD::SetPreaccIn(node[jPoint]->GetSolution_Max(iVar));
-        AD::SetPreaccIn(node[jPoint]->GetSolution_Min(iVar));
 
         /*--- Calculate the interface left gradient, delta- (dm) ---*/
 
@@ -5986,16 +5759,16 @@ void CEulerSolver::SetPrimitive_Limiter(CGeometry *geometry, CConfig *config) {
           node[jPoint]->SetLimiter_Primitive(iVar, limiter);
           AD::SetPreaccOut(node[jPoint]->GetLimiter_Primitive()[iVar]);
         }
-
+        
+        AD::EndPreacc();
       }
-
-      AD::EndPreacc();
-
     }
-
-    delete [] LocalMinPrimitive; delete [] GlobalMinPrimitive;
-    delete [] LocalMaxPrimitive; delete [] GlobalMaxPrimitive;
-
+    
+    if (LocalMinPrimitive  != NULL) delete [] LocalMinPrimitive;
+    if (LocalMaxPrimitive  != NULL) delete [] LocalMaxPrimitive;
+    if (GlobalMinPrimitive != NULL) delete [] GlobalMinPrimitive;
+    if (GlobalMaxPrimitive != NULL) delete [] GlobalMaxPrimitive;
+    
   }
 
   /*--- Correct the limiter values across any periodic boundaries. ---*/
@@ -6009,7 +5782,10 @@ void CEulerSolver::SetPrimitive_Limiter(CGeometry *geometry, CConfig *config) {
 
   InitiateComms(geometry, config, PRIMITIVE_LIMITER);
   CompleteComms(geometry, config, PRIMITIVE_LIMITER);
-
+  
+#ifdef CODI_REVERSE_TYPE
+  if (TapeActive) AD::StartRecording();
+#endif
 }
 
 void CEulerSolver::SetPreconditioner(CConfig *config, unsigned long iPoint) {
@@ -6070,13 +5846,13 @@ void CEulerSolver::GetPower_Properties(CGeometry *geometry, CConfig *config, uns
   unsigned short iDim, iMarker, jMarker;
   unsigned long iVertex, iPoint;
   su2double  *V_inlet = NULL, *V_outlet = NULL, Pressure, Temperature, Velocity[3], Vn,
-  Velocity2, Density, Area, SoundSpeed, TotalPressure, Vel_Infty2, RamDrag,
-  TotalTemperature, VelocityJet,
-  Vel_Infty, MaxPressure, MinPressure, MFR, InfVel2;
+      Velocity2, Density, Area, SoundSpeed, TotalPressure, Vel_Infty2, RamDrag,
+      TotalTemperature, VelocityJet,
+      Vel_Infty, MaxPressure, MinPressure, MFR, InfVel2;
   unsigned short iMarker_Inlet, iMarker_Outlet, nMarker_Inlet, nMarker_Outlet;
   string Inlet_TagBound, Outlet_TagBound;
   su2double DeltaPress = 0.0, DeltaTemp = 0.0, TotalPressRatio = 0.0, TotalTempRatio = 0.0, StaticPressRatio = 0.0, StaticTempRatio = 0.0,
-  NetThrust = 0.0, GrossThrust = 0.0, Power = 0.0, MassFlow = 0.0, Mach = 0.0, Force = 0.0;
+      NetThrust = 0.0, GrossThrust = 0.0, Power = 0.0, MassFlow = 0.0, Mach = 0.0, Force = 0.0;
   bool ReverseFlow, Engine = false, Pair = true;
 
   su2double Gas_Constant                         = config->GetGas_ConstantND();
@@ -6765,17 +6541,17 @@ void CEulerSolver::GetPower_Properties(CGeometry *geometry, CConfig *config, uns
           su2double Ref = config->GetDensity_Ref() * config->GetVelocity_Ref() * config->GetVelocity_Ref() * 1.0 * 1.0;
           su2double DmT = GetTotal_CD() * Factor;
           
-//          su2double ModDmT = 0.0;
-//          if (nDim == 2) ModDmT = sqrt(GetTotal_CFx()*GetTotal_CFx() +
-//                                       GetTotal_CFy()*GetTotal_CFy());
-//
-//          if (nDim == 3) ModDmT = sqrt(GetTotal_CFx()*GetTotal_CFx() +
-//                                       GetTotal_CFy()*GetTotal_CFy() +
-//                                       GetTotal_CFz()*GetTotal_CFz());
-//
-//          DmTVector[0] = GetTotal_CFx()/ModDmT;
-//          DmTVector[1] = GetTotal_CFy()/ModDmT;
-//          if (nDim == 3)  DmTVector[2] = GetTotal_CFz()/ModDmT;
+          //          su2double ModDmT = 0.0;
+          //          if (nDim == 2) ModDmT = sqrt(GetTotal_CFx()*GetTotal_CFx() +
+          //                                       GetTotal_CFy()*GetTotal_CFy());
+          //
+          //          if (nDim == 3) ModDmT = sqrt(GetTotal_CFx()*GetTotal_CFx() +
+          //                                       GetTotal_CFy()*GetTotal_CFy() +
+          //                                       GetTotal_CFz()*GetTotal_CFz());
+          //
+          //          DmTVector[0] = GetTotal_CFx()/ModDmT;
+          //          DmTVector[1] = GetTotal_CFy()/ModDmT;
+          //          if (nDim == 3)  DmTVector[2] = GetTotal_CFz()/ModDmT;
 
           /*--- Set the aero drag ---*/
 
@@ -7519,7 +7295,7 @@ void CEulerSolver::SetFarfield_AoA(CGeometry *geometry, CSolver **solver_contain
                                    CConfig *config, unsigned short iMesh, bool Output) {
 
   su2double Target_CL = 0.0, AoA = 0.0, Vel_Infty[3], AoA_inc = 0.0, Vel_Infty_Mag, Old_AoA,
-  dCL_dAlpha_, dCD_dCL_, dCMx_dCL_, dCMy_dCL_, dCMz_dCL_;
+      dCL_dAlpha_, dCD_dCL_, dCMx_dCL_, dCMy_dCL_, dCMz_dCL_;
   unsigned long Wrt_Con_Freq;
   unsigned short iDim;
 
@@ -7640,7 +7416,7 @@ void CEulerSolver::SetFarfield_AoA(CGeometry *geometry, CSolver **solver_contain
 
   }
 
-	unsigned long Iter_dCL_dAlpha = config->GetIter_dCL_dAlpha();
+  unsigned long Iter_dCL_dAlpha = config->GetIter_dCL_dAlpha();
 
   if ((config->GetnExtIter()-Iter_dCL_dAlpha == ExtIter) && Output) {
 
@@ -7660,11 +7436,11 @@ void CEulerSolver::SetFarfield_AoA(CGeometry *geometry, CSolver **solver_contain
     
     if ((rank == MASTER_NODE) && (iMesh == MESH_0)) {
       
-    	if (config->GetnExtIter()-Iter_dCL_dAlpha == ExtIter) {
-       cout << endl << "----------------------------- Fixed CL Mode -----------------------------" << endl;
-       cout << " Change AoA by +0.001 deg to evaluate gradient." << endl;
-       cout << "-------------------------------------------------------------------------" << endl << endl;
-    	}
+      if (config->GetnExtIter()-Iter_dCL_dAlpha == ExtIter) {
+        cout << endl << "----------------------------- Fixed CL Mode -----------------------------" << endl;
+        cout << " Change AoA by +0.001 deg to evaluate gradient." << endl;
+        cout << "-------------------------------------------------------------------------" << endl << endl;
+      }
 
     }
 
@@ -7726,20 +7502,20 @@ void CEulerSolver::SetFarfield_AoA(CGeometry *geometry, CSolver **solver_contain
 
     /*--- Use finite differences to compute  ---*/
 
-  		dCL_dAlpha_ = (Total_CL-Total_CL_Prev)/0.001;
-  		dCD_dCL_    = (Total_CD-Total_CD_Prev)/(Total_CL-Total_CL_Prev);
-  		dCMx_dCL_   = (Total_CMx-Total_CMx_Prev)/(Total_CL-Total_CL_Prev);
-  		dCMy_dCL_   = (Total_CMy-Total_CMy_Prev)/(Total_CL-Total_CL_Prev);
-  		dCMz_dCL_   = (Total_CMz-Total_CMz_Prev)/(Total_CL-Total_CL_Prev);
+    dCL_dAlpha_ = (Total_CL-Total_CL_Prev)/0.001;
+    dCD_dCL_    = (Total_CD-Total_CD_Prev)/(Total_CL-Total_CL_Prev);
+    dCMx_dCL_   = (Total_CMx-Total_CMx_Prev)/(Total_CL-Total_CL_Prev);
+    dCMy_dCL_   = (Total_CMy-Total_CMy_Prev)/(Total_CL-Total_CL_Prev);
+    dCMz_dCL_   = (Total_CMz-Total_CMz_Prev)/(Total_CL-Total_CL_Prev);
 
-  		/*--- Set the value of the  dOF/dCL in the config file ---*/
+    /*--- Set the value of the  dOF/dCL in the config file ---*/
 
-  		config->SetdCD_dCL(dCD_dCL_);
-  		config->SetdCMx_dCL(dCMx_dCL_);
-  		config->SetdCMy_dCL(dCMy_dCL_);
-  		config->SetdCMz_dCL(dCMz_dCL_);
+    config->SetdCD_dCL(dCD_dCL_);
+    config->SetdCMx_dCL(dCMx_dCL_);
+    config->SetdCMy_dCL(dCMy_dCL_);
+    config->SetdCMz_dCL(dCMz_dCL_);
 
-  		config->SetdCL_dAlpha(dCL_dAlpha_);
+    config->SetdCL_dAlpha(dCL_dAlpha_);
 
     if (rank == MASTER_NODE) {
       cout << endl << "----------------------------- Fixed CL Mode -----------------------------" << endl;
@@ -7920,6 +7696,7 @@ void CEulerSolver::Evaluate_ObjFunc(CConfig *config) {
   
   unsigned short iMarker_Monitoring, Kind_ObjFunc;
   su2double Weight_ObjFunc;
+  
   Total_ComboObj = 0.0;
 
   /*--- Loop over all monitored markers, add to the 'combo' objective ---*/
@@ -8048,7 +7825,7 @@ void CEulerSolver::BC_Euler_Wall(CGeometry *geometry, CSolver **solver_container
   unsigned short iDim, iVar, jVar, kVar, jDim;
   unsigned long iPoint, iVertex;
   su2double *Normal = NULL, *GridVel = NULL, Area, UnitNormal[3], *NormalArea,
-  ProjGridVel = 0.0, turb_ke;
+      ProjGridVel = 0.0, turb_ke;
   su2double Density_b, StaticEnergy_b, Enthalpy_b, *Velocity_b, Kappa_b, Chi_b, Energy_b, VelMagnitude2_b, Pressure_b;
   su2double Density_i, *Velocity_i, ProjVelocity_i = 0.0, Energy_i, VelMagnitude2_i;
   su2double **Jacobian_b, **DubDu;
@@ -8997,7 +8774,7 @@ void CEulerSolver::BC_Riemann(CGeometry *geometry, CSolver **solver_container,
 
 
 void CEulerSolver::BC_TurboRiemann(CGeometry *geometry, CSolver **solver_container,
-    CNumerics *conv_numerics, CNumerics *visc_numerics, CConfig *config, unsigned short val_marker) {
+                                   CNumerics *conv_numerics, CNumerics *visc_numerics, CConfig *config, unsigned short val_marker) {
   unsigned short iDim, iVar, jVar, kVar, iSpan;
   unsigned long iPoint, Point_Normal, oldVertex;
   long iVertex;
@@ -9018,7 +8795,7 @@ void CEulerSolver::BC_TurboRiemann(CGeometry *geometry, CSolver **solver_contain
   bool viscous              = config->GetViscous();
   bool gravity = (config->GetGravityForce());
   bool tkeNeeded = (((config->GetKind_Solver() == RANS )|| (config->GetKind_Solver() == DISC_ADJ_RANS)) &&
-      (config->GetKind_Turb_Model() == SST));
+                    (config->GetKind_Turb_Model() == SST));
 
   su2double *Normal, *turboNormal, *UnitNormal, *FlowDirMix, FlowDirMixMag, *turboVelocity;
   Normal = new su2double[nDim];
@@ -9105,128 +8882,128 @@ void CEulerSolver::BC_TurboRiemann(CGeometry *geometry, CSolver **solver_contain
 
         switch(config->GetKind_Data_Riemann(Marker_Tag))
         {
-          //TODO(turbo), generilize for 3D case
-          //TODO(turbo), generilize for Inlet and Outlet in for backflow treatment
-          //TODO(turbo), implement not uniform inlet and radial equilibrium for the outlet
-          case TOTAL_CONDITIONS_PT:
+        //TODO(turbo), generilize for 3D case
+        //TODO(turbo), generilize for Inlet and Outlet in for backflow treatment
+        //TODO(turbo), implement not uniform inlet and radial equilibrium for the outlet
+        case TOTAL_CONDITIONS_PT:
 
-            /*--- Retrieve the specified total conditions for this boundary. ---*/
-            if (gravity) P_Total = config->GetRiemann_Var1(Marker_Tag) - geometry->node[iPoint]->GetCoord(nDim-1)*STANDARD_GRAVITY;/// check in which case is true (only freesurface?)
-            else P_Total  = config->GetRiemann_Var1(Marker_Tag);
-            T_Total  = config->GetRiemann_Var2(Marker_Tag);
-            Flow_Dir = config->GetRiemann_FlowDir(Marker_Tag);
+          /*--- Retrieve the specified total conditions for this boundary. ---*/
+          if (gravity) P_Total = config->GetRiemann_Var1(Marker_Tag) - geometry->node[iPoint]->GetCoord(nDim-1)*STANDARD_GRAVITY;/// check in which case is true (only freesurface?)
+          else P_Total  = config->GetRiemann_Var1(Marker_Tag);
+          T_Total  = config->GetRiemann_Var2(Marker_Tag);
+          Flow_Dir = config->GetRiemann_FlowDir(Marker_Tag);
 
-            /*--- Non-dim. the inputs if necessary. ---*/
-            P_Total /= config->GetPressure_Ref();
-            T_Total /= config->GetTemperature_Ref();
+          /*--- Non-dim. the inputs if necessary. ---*/
+          P_Total /= config->GetPressure_Ref();
+          T_Total /= config->GetTemperature_Ref();
 
-            /* --- Computes the total state --- */
-            FluidModel->SetTDState_PT(P_Total, T_Total);
-            Enthalpy_e = FluidModel->GetStaticEnergy()+ FluidModel->GetPressure()/FluidModel->GetDensity();
-            Entropy_e = FluidModel->GetEntropy();
+          /* --- Computes the total state --- */
+          FluidModel->SetTDState_PT(P_Total, T_Total);
+          Enthalpy_e = FluidModel->GetStaticEnergy()+ FluidModel->GetPressure()/FluidModel->GetDensity();
+          Entropy_e = FluidModel->GetEntropy();
 
-            /* --- Compute the boundary state u_e --- */
-            Velocity2_e = Velocity2_i;
-            for (iDim = 0; iDim < nDim; iDim++)
-              turboVelocity[iDim] = sqrt(Velocity2_e)*Flow_Dir[iDim];
-            ComputeBackVelocity(turboVelocity,turboNormal, Velocity_e, config->GetMarker_All_TurbomachineryFlag(val_marker),config->GetKind_TurboMachinery(iZone));
-            StaticEnthalpy_e = Enthalpy_e - 0.5 * Velocity2_e;
-            FluidModel->SetTDState_hs(StaticEnthalpy_e, Entropy_e);
-            Density_e = FluidModel->GetDensity();
-            StaticEnergy_e = FluidModel->GetStaticEnergy();
-            Energy_e = StaticEnergy_e + 0.5 * Velocity2_e;
-            if (tkeNeeded) Energy_e += GetTke_Inf();
-            break;
+          /* --- Compute the boundary state u_e --- */
+          Velocity2_e = Velocity2_i;
+          for (iDim = 0; iDim < nDim; iDim++)
+            turboVelocity[iDim] = sqrt(Velocity2_e)*Flow_Dir[iDim];
+          ComputeBackVelocity(turboVelocity,turboNormal, Velocity_e, config->GetMarker_All_TurbomachineryFlag(val_marker),config->GetKind_TurboMachinery(iZone));
+          StaticEnthalpy_e = Enthalpy_e - 0.5 * Velocity2_e;
+          FluidModel->SetTDState_hs(StaticEnthalpy_e, Entropy_e);
+          Density_e = FluidModel->GetDensity();
+          StaticEnergy_e = FluidModel->GetStaticEnergy();
+          Energy_e = StaticEnergy_e + 0.5 * Velocity2_e;
+          if (tkeNeeded) Energy_e += GetTke_Inf();
+          break;
 
-          case MIXING_IN:
+        case MIXING_IN:
 
-            /* --- compute total averaged quantities ---*/
-            FluidModel->SetTDState_Prho(ExtAveragePressure[val_marker][iSpan], ExtAverageDensity[val_marker][iSpan]);
-            AverageEnthalpy = FluidModel->GetStaticEnergy() + ExtAveragePressure[val_marker][iSpan]/ExtAverageDensity[val_marker][iSpan];
-            AverageEntropy  = FluidModel->GetEntropy();
+          /* --- compute total averaged quantities ---*/
+          FluidModel->SetTDState_Prho(ExtAveragePressure[val_marker][iSpan], ExtAverageDensity[val_marker][iSpan]);
+          AverageEnthalpy = FluidModel->GetStaticEnergy() + ExtAveragePressure[val_marker][iSpan]/ExtAverageDensity[val_marker][iSpan];
+          AverageEntropy  = FluidModel->GetEntropy();
 
-            FlowDirMixMag = 0;
-            for (iDim = 0; iDim < nDim; iDim++)
-              FlowDirMixMag += ExtAverageTurboVelocity[val_marker][iSpan][iDim]*ExtAverageTurboVelocity[val_marker][iSpan][iDim];
-            for (iDim = 0; iDim < nDim; iDim++){
-              FlowDirMix[iDim] = ExtAverageTurboVelocity[val_marker][iSpan][iDim]/sqrt(FlowDirMixMag);
-            }
-
-
-            /* --- Computes the total state --- */
-            Enthalpy_e = AverageEnthalpy;
-            Entropy_e = AverageEntropy;
-
-            /* --- Compute the boundary state u_e --- */
-            Velocity2_e = Velocity2_i;
-            for (iDim = 0; iDim < nDim; iDim++){
-              turboVelocity[iDim] = sqrt(Velocity2_e)*FlowDirMix[iDim];
-
-            }
-            ComputeBackVelocity(turboVelocity,turboNormal, Velocity_e, config->GetMarker_All_TurbomachineryFlag(val_marker),config->GetKind_TurboMachinery(iZone));
-
-            StaticEnthalpy_e = Enthalpy_e - 0.5 * Velocity2_e;
-            FluidModel->SetTDState_hs(StaticEnthalpy_e, Entropy_e);
-            Density_e = FluidModel->GetDensity();
-            StaticEnergy_e = FluidModel->GetStaticEnergy();
-            Energy_e = StaticEnergy_e + 0.5 * Velocity2_e;
-            //				if (tkeNeeded) Energy_e += GetTke_Inf();
-            break;
+          FlowDirMixMag = 0;
+          for (iDim = 0; iDim < nDim; iDim++)
+            FlowDirMixMag += ExtAverageTurboVelocity[val_marker][iSpan][iDim]*ExtAverageTurboVelocity[val_marker][iSpan][iDim];
+          for (iDim = 0; iDim < nDim; iDim++){
+            FlowDirMix[iDim] = ExtAverageTurboVelocity[val_marker][iSpan][iDim]/sqrt(FlowDirMixMag);
+          }
 
 
-          case MIXING_OUT:
+          /* --- Computes the total state --- */
+          Enthalpy_e = AverageEnthalpy;
+          Entropy_e = AverageEntropy;
 
-            /*--- Retrieve the staic pressure for this boundary. ---*/
-            Pressure_e = ExtAveragePressure[val_marker][iSpan];
-            Density_e = Density_i;
+          /* --- Compute the boundary state u_e --- */
+          Velocity2_e = Velocity2_i;
+          for (iDim = 0; iDim < nDim; iDim++){
+            turboVelocity[iDim] = sqrt(Velocity2_e)*FlowDirMix[iDim];
 
-            /* --- Compute the boundary state u_e --- */
-            FluidModel->SetTDState_Prho(Pressure_e, Density_e);
-            Velocity2_e = 0.0;
-            for (iDim = 0; iDim < nDim; iDim++) {
-              Velocity_e[iDim] = Velocity_i[iDim];
-              Velocity2_e += Velocity_e[iDim]*Velocity_e[iDim];
-            }
-            Energy_e = FluidModel->GetStaticEnergy() + 0.5*Velocity2_e;
-            break;
+          }
+          ComputeBackVelocity(turboVelocity,turboNormal, Velocity_e, config->GetMarker_All_TurbomachineryFlag(val_marker),config->GetKind_TurboMachinery(iZone));
 
-          case STATIC_PRESSURE:
-
-            /*--- Retrieve the staic pressure for this boundary. ---*/
-            Pressure_e = config->GetRiemann_Var1(Marker_Tag);
-            Pressure_e /= config->GetPressure_Ref();
-            Density_e = Density_i;
-
-            /* --- Compute the boundary state u_e --- */
-            FluidModel->SetTDState_Prho(Pressure_e, Density_e);
-            Velocity2_e = 0.0;
-            for (iDim = 0; iDim < nDim; iDim++) {
-              Velocity_e[iDim] = Velocity_i[iDim];
-              Velocity2_e += Velocity_e[iDim]*Velocity_e[iDim];
-            }
-            Energy_e = FluidModel->GetStaticEnergy() + 0.5*Velocity2_e;
-            break;
+          StaticEnthalpy_e = Enthalpy_e - 0.5 * Velocity2_e;
+          FluidModel->SetTDState_hs(StaticEnthalpy_e, Entropy_e);
+          Density_e = FluidModel->GetDensity();
+          StaticEnergy_e = FluidModel->GetStaticEnergy();
+          Energy_e = StaticEnergy_e + 0.5 * Velocity2_e;
+          //				if (tkeNeeded) Energy_e += GetTke_Inf();
+          break;
 
 
-          case RADIAL_EQUILIBRIUM:
+        case MIXING_OUT:
 
-            /*--- Retrieve the staic pressure for this boundary. ---*/
-            Pressure_e = RadialEquilibriumPressure[val_marker][iSpan];
-            Density_e = Density_i;
+          /*--- Retrieve the staic pressure for this boundary. ---*/
+          Pressure_e = ExtAveragePressure[val_marker][iSpan];
+          Density_e = Density_i;
 
-            /* --- Compute the boundary state u_e --- */
-            FluidModel->SetTDState_Prho(Pressure_e, Density_e);
-            Velocity2_e = 0.0;
-            for (iDim = 0; iDim < nDim; iDim++) {
-              Velocity_e[iDim] = Velocity_i[iDim];
-              Velocity2_e += Velocity_e[iDim]*Velocity_e[iDim];
-            }
-            Energy_e = FluidModel->GetStaticEnergy() + 0.5*Velocity2_e;
-            break;
+          /* --- Compute the boundary state u_e --- */
+          FluidModel->SetTDState_Prho(Pressure_e, Density_e);
+          Velocity2_e = 0.0;
+          for (iDim = 0; iDim < nDim; iDim++) {
+            Velocity_e[iDim] = Velocity_i[iDim];
+            Velocity2_e += Velocity_e[iDim]*Velocity_e[iDim];
+          }
+          Energy_e = FluidModel->GetStaticEnergy() + 0.5*Velocity2_e;
+          break;
 
-          default:
-            SU2_MPI::Error("Invalid Riemann input!", CURRENT_FUNCTION);
-            break;
+        case STATIC_PRESSURE:
+
+          /*--- Retrieve the staic pressure for this boundary. ---*/
+          Pressure_e = config->GetRiemann_Var1(Marker_Tag);
+          Pressure_e /= config->GetPressure_Ref();
+          Density_e = Density_i;
+
+          /* --- Compute the boundary state u_e --- */
+          FluidModel->SetTDState_Prho(Pressure_e, Density_e);
+          Velocity2_e = 0.0;
+          for (iDim = 0; iDim < nDim; iDim++) {
+            Velocity_e[iDim] = Velocity_i[iDim];
+            Velocity2_e += Velocity_e[iDim]*Velocity_e[iDim];
+          }
+          Energy_e = FluidModel->GetStaticEnergy() + 0.5*Velocity2_e;
+          break;
+
+
+        case RADIAL_EQUILIBRIUM:
+
+          /*--- Retrieve the staic pressure for this boundary. ---*/
+          Pressure_e = RadialEquilibriumPressure[val_marker][iSpan];
+          Density_e = Density_i;
+
+          /* --- Compute the boundary state u_e --- */
+          FluidModel->SetTDState_Prho(Pressure_e, Density_e);
+          Velocity2_e = 0.0;
+          for (iDim = 0; iDim < nDim; iDim++) {
+            Velocity_e[iDim] = Velocity_i[iDim];
+            Velocity2_e += Velocity_e[iDim]*Velocity_e[iDim];
+          }
+          Energy_e = FluidModel->GetStaticEnergy() + 0.5*Velocity2_e;
+          break;
+
+        default:
+          SU2_MPI::Error("Invalid Riemann input!", CURRENT_FUNCTION);
+          break;
         }
 
         /*--- Compute P (matrix of right eigenvectors) ---*/
@@ -9476,7 +9253,7 @@ void CEulerSolver::BC_TurboRiemann(CGeometry *geometry, CSolver **solver_contain
         }
       }
     }
-}
+  }
 
   /*--- Free locally allocated memory ---*/
   delete [] Normal;
@@ -9662,7 +9439,7 @@ void CEulerSolver::PreprocessBC_Giles(CGeometry *geometry, CConfig *config, CNum
 }
 
 void CEulerSolver::BC_Giles(CGeometry *geometry, CSolver **solver_container,
-    CNumerics *conv_numerics, CNumerics *visc_numerics, CConfig *config, unsigned short val_marker) {
+                            CNumerics *conv_numerics, CNumerics *visc_numerics, CConfig *config, unsigned short val_marker) {
   unsigned short iDim, iVar, jVar, iSpan;
   unsigned long  iPoint, Point_Normal, oldVertex, k, kend, kend_max;
   long iVertex;
@@ -10410,8 +10187,8 @@ void CEulerSolver::BC_Inlet(CGeometry *geometry, CSolver **solver_container,
   unsigned short iDim;
   unsigned long iVertex, iPoint;
   su2double P_Total, T_Total, Velocity[3], Velocity2, H_Total, Temperature, Riemann,
-  Pressure, Density, Energy, *Flow_Dir, Mach2, SoundSpeed2, SoundSpeed_Total2, Vel_Mag,
-  alpha, aa, bb, cc, dd, Area, UnitNormal[3];
+      Pressure, Density, Energy, *Flow_Dir, Mach2, SoundSpeed2, SoundSpeed_Total2, Vel_Mag,
+      alpha, aa, bb, cc, dd, Area, UnitNormal[3];
   su2double *V_inlet, *V_domain;
 
   bool implicit             = (config->GetKind_TimeIntScheme_Flow() == EULER_IMPLICIT);
@@ -10423,7 +10200,7 @@ void CEulerSolver::BC_Inlet(CGeometry *geometry, CSolver **solver_container,
   bool tkeNeeded = (((config->GetKind_Solver() == RANS )|| (config->GetKind_Solver() == DISC_ADJ_RANS)) &&
                     (config->GetKind_Turb_Model() == SST));
   su2double *Normal = new su2double[nDim];
-    
+
   /*--- Loop over all the vertices on this boundary marker ---*/
   
   for (iVertex = 0; iVertex < geometry->nVertex[val_marker]; iVertex++) {
@@ -10630,7 +10407,7 @@ void CEulerSolver::BC_Inlet(CGeometry *geometry, CSolver **solver_container,
           V_inlet[nDim+2] = Density;
           V_inlet[nDim+3] = Energy + Pressure/Density;
 
-          break;
+        break;
       }
       
       /*--- Set various quantities in the solver class ---*/
@@ -10658,45 +10435,45 @@ void CEulerSolver::BC_Inlet(CGeometry *geometry, CSolver **solver_container,
       if (config->GetKind_Upwind() == TURKEL)
         node[iPoint]->SetPreconditioner_Beta(conv_numerics->GetPrecond_Beta());
       
-//      /*--- Viscous contribution, commented out because serious convergence problems ---*/
-//
-//      if (viscous) {
-//
-//        /*--- Set laminar and eddy viscosity at the infinity ---*/
-//
-//        V_inlet[nDim+5] = node[iPoint]->GetLaminarViscosity();
-//        V_inlet[nDim+6] = node[iPoint]->GetEddyViscosity();
-//
-//        /*--- Set the normal vector and the coordinates ---*/
-//
-//        visc_numerics->SetNormal(Normal);
-//        visc_numerics->SetCoord(geometry->node[iPoint]->GetCoord(), geometry->node[Point_Normal]->GetCoord());
-//
-//        /*--- Primitive variables, and gradient ---*/
-//
-//        visc_numerics->SetPrimitive(V_domain, V_inlet);
-//        visc_numerics->SetPrimVarGradient(node[iPoint]->GetGradient_Primitive(), node[iPoint]->GetGradient_Primitive());
-//
-//        /*--- Turbulent kinetic energy ---*/
-//
-//        if (config->GetKind_Turb_Model() == SST)
-//          visc_numerics->SetTurbKineticEnergy(solver_container[TURB_SOL]->node[iPoint]->GetSolution(0), solver_container[TURB_SOL]->node[iPoint]->GetSolution(0));
-//
-//        /*--- Set the wall shear stress values (wall functions) to -1 (no evaluation using wall functions) ---*/
-//
-//        visc_numerics->SetTauWall(-1.0, -1.0);
-//
-//        /*--- Compute and update residual ---*/
-//
-//        visc_numerics->ComputeResidual(Residual, Jacobian_i, Jacobian_j, config);
-//        LinSysRes.SubtractBlock(iPoint, Residual);
-//
-//        /*--- Jacobian contribution for implicit integration ---*/
-//
-//        if (implicit)
-//          Jacobian.SubtractBlock(iPoint, iPoint, Jacobian_i);
-//
-//      }
+      //      /*--- Viscous contribution, commented out because serious convergence problems ---*/
+      //
+      //      if (viscous) {
+      //
+      //        /*--- Set laminar and eddy viscosity at the infinity ---*/
+      //
+      //        V_inlet[nDim+5] = node[iPoint]->GetLaminarViscosity();
+      //        V_inlet[nDim+6] = node[iPoint]->GetEddyViscosity();
+      //
+      //        /*--- Set the normal vector and the coordinates ---*/
+      //
+      //        visc_numerics->SetNormal(Normal);
+      //        visc_numerics->SetCoord(geometry->node[iPoint]->GetCoord(), geometry->node[Point_Normal]->GetCoord());
+      //
+      //        /*--- Primitive variables, and gradient ---*/
+      //
+      //        visc_numerics->SetPrimitive(V_domain, V_inlet);
+      //        visc_numerics->SetPrimVarGradient(node[iPoint]->GetGradient_Primitive(), node[iPoint]->GetGradient_Primitive());
+      //
+      //        /*--- Turbulent kinetic energy ---*/
+      //
+      //        if (config->GetKind_Turb_Model() == SST)
+      //          visc_numerics->SetTurbKineticEnergy(solver_container[TURB_SOL]->node[iPoint]->GetSolution(0), solver_container[TURB_SOL]->node[iPoint]->GetSolution(0));
+      //
+      //        /*--- Set the wall shear stress values (wall functions) to -1 (no evaluation using wall functions) ---*/
+      //
+      //        visc_numerics->SetTauWall(-1.0, -1.0);
+      //
+      //        /*--- Compute and update residual ---*/
+      //
+      //        visc_numerics->ComputeResidual(Residual, Jacobian_i, Jacobian_j, config);
+      //        LinSysRes.SubtractBlock(iPoint, Residual);
+      //
+      //        /*--- Jacobian contribution for implicit integration ---*/
+      //
+      //        if (implicit)
+      //          Jacobian.SubtractBlock(iPoint, iPoint, Jacobian_i);
+      //
+      //      }
       
     }
   }
@@ -10732,7 +10509,7 @@ void CEulerSolver::BC_Outlet(CGeometry *geometry, CSolver **solver_container,
     V_outlet = GetCharacPrimVar(val_marker, iVertex);
     
     iPoint = geometry->vertex[val_marker][iVertex]->GetNode();
-
+    
     /*--- Check if the node belongs to the domain (i.e., not a halo node) ---*/
     if (geometry->node[iPoint]->GetDomain()) {
       
@@ -10819,70 +10596,70 @@ void CEulerSolver::BC_Outlet(CGeometry *geometry, CSolver **solver_container,
       
       /*--- Set various quantities in the solver class ---*/
       conv_numerics->SetPrimitive(V_domain, V_outlet);
-
+      
       if (grid_movement)
         conv_numerics->SetGridVel(geometry->node[iPoint]->GetGridVel(), geometry->node[iPoint]->GetGridVel());
-
+      
       /*--- Compute the residual using an upwind scheme ---*/
       conv_numerics->ComputeResidual(Residual, Jacobian_i, Jacobian_j, config);
-
+      
       /*--- Update residual value ---*/
       LinSysRes.AddBlock(iPoint, Residual);
-
+      
       /*--- Jacobian contribution for implicit integration ---*/
       if (implicit) {
         Jacobian.AddBlock(iPoint, iPoint, Jacobian_i);
       }
-
+      
       /*--- Roe Turkel preconditioning, set the value of beta ---*/
       if (config->GetKind_Upwind() == TURKEL)
         node[iPoint]->SetPreconditioner_Beta(conv_numerics->GetPrecond_Beta());
 
-//      /*--- Viscous contribution, commented out because serious convergence problems  ---*/
-//
-//      if (viscous) {
-//
-//        /*--- Set laminar and eddy viscosity at the infinity ---*/
-//
-//        V_outlet[nDim+5] = node[iPoint]->GetLaminarViscosity();
-//        V_outlet[nDim+6] = node[iPoint]->GetEddyViscosity();
-//
-//        /*--- Set the normal vector and the coordinates ---*/
-//
-//        visc_numerics->SetNormal(Normal);
-//        visc_numerics->SetCoord(geometry->node[iPoint]->GetCoord(), geometry->node[Point_Normal]->GetCoord());
-//
-//        /*--- Primitive variables, and gradient ---*/
-//
-//        visc_numerics->SetPrimitive(V_domain, V_outlet);
-//        visc_numerics->SetPrimVarGradient(node[iPoint]->GetGradient_Primitive(), node[iPoint]->GetGradient_Primitive());
-//
-//        /*--- Turbulent kinetic energy ---*/
-//
-//        if (config->GetKind_Turb_Model() == SST)
-//          visc_numerics->SetTurbKineticEnergy(solver_container[TURB_SOL]->node[iPoint]->GetSolution(0), solver_container[TURB_SOL]->node[iPoint]->GetSolution(0));
-//
-//        /*--- Set the wall shear stress values (wall functions) to -1 (no evaluation using wall functions) ---*/
-//        visc_numerics->SetTauWall(-1.0, -1.0);
-//
-//        /*--- Compute and update residual ---*/
-//
-//        visc_numerics->ComputeResidual(Residual, Jacobian_i, Jacobian_j, config);
-//        LinSysRes.SubtractBlock(iPoint, Residual);
-//
-//        /*--- Jacobian contribution for implicit integration ---*/
-//
-//        if (implicit)
-//         Jacobian.SubtractBlock(iPoint, iPoint, Jacobian_i);
-//
-//      }
+      //      /*--- Viscous contribution, commented out because serious convergence problems  ---*/
+      //
+      //      if (viscous) {
+      //
+      //        /*--- Set laminar and eddy viscosity at the infinity ---*/
+      //
+      //        V_outlet[nDim+5] = node[iPoint]->GetLaminarViscosity();
+      //        V_outlet[nDim+6] = node[iPoint]->GetEddyViscosity();
+      //
+      //        /*--- Set the normal vector and the coordinates ---*/
+      //
+      //        visc_numerics->SetNormal(Normal);
+      //        visc_numerics->SetCoord(geometry->node[iPoint]->GetCoord(), geometry->node[Point_Normal]->GetCoord());
+      //
+      //        /*--- Primitive variables, and gradient ---*/
+      //
+      //        visc_numerics->SetPrimitive(V_domain, V_outlet);
+      //        visc_numerics->SetPrimVarGradient(node[iPoint]->GetGradient_Primitive(), node[iPoint]->GetGradient_Primitive());
+      //
+      //        /*--- Turbulent kinetic energy ---*/
+      //
+      //        if (config->GetKind_Turb_Model() == SST)
+      //          visc_numerics->SetTurbKineticEnergy(solver_container[TURB_SOL]->node[iPoint]->GetSolution(0), solver_container[TURB_SOL]->node[iPoint]->GetSolution(0));
+      //
+      //        /*--- Set the wall shear stress values (wall functions) to -1 (no evaluation using wall functions) ---*/
+      //        visc_numerics->SetTauWall(-1.0, -1.0);
+      //
+      //        /*--- Compute and update residual ---*/
+      //
+      //        visc_numerics->ComputeResidual(Residual, Jacobian_i, Jacobian_j, config);
+      //        LinSysRes.SubtractBlock(iPoint, Residual);
+      //
+      //        /*--- Jacobian contribution for implicit integration ---*/
+      //
+      //        if (implicit)
+      //         Jacobian.SubtractBlock(iPoint, iPoint, Jacobian_i);
+      //
+      //      }
 
     }
   }
-
+  
   /*--- Free locally allocated memory ---*/
   delete [] Normal;
-
+  
 }
 
 void CEulerSolver::BC_Supersonic_Inlet(CGeometry *geometry, CSolver **solver_container,
@@ -10980,44 +10757,44 @@ void CEulerSolver::BC_Supersonic_Inlet(CGeometry *geometry, CSolver **solver_con
       if (implicit)
         Jacobian.AddBlock(iPoint, iPoint, Jacobian_i);
       
-//      /*--- Viscous contribution, commented out because serious convergence problems ---*/
-//
-//      if (viscous) {
-//
-//        /*--- Set laminar and eddy viscosity at the infinity ---*/
-//
-//        V_inlet[nDim+5] = node[iPoint]->GetLaminarViscosity();
-//        V_inlet[nDim+6] = node[iPoint]->GetEddyViscosity();
-//
-//        /*--- Set the normal vector and the coordinates ---*/
-//
-//        visc_numerics->SetNormal(Normal);
-//        visc_numerics->SetCoord(geometry->node[iPoint]->GetCoord(), geometry->node[Point_Normal]->GetCoord());
-//
-//        /*--- Primitive variables, and gradient ---*/
-//
-//        visc_numerics->SetPrimitive(V_domain, V_inlet);
-//        visc_numerics->SetPrimVarGradient(node[iPoint]->GetGradient_Primitive(), node[iPoint]->GetGradient_Primitive());
-//
-//        /*--- Turbulent kinetic energy ---*/
-//
-//        if (config->GetKind_Turb_Model() == SST)
-//          visc_numerics->SetTurbKineticEnergy(solver_container[TURB_SOL]->node[iPoint]->GetSolution(0), solver_container[TURB_SOL]->node[iPoint]->GetSolution(0));
-//
-//        /*--- Set the wall shear stress values (wall functions) to -1 (no evaluation using wall functions) ---*/
-//
-//        visc_numerics->SetTauWall(-1.0, -1.0);
-//
-//        /*--- Compute and update residual ---*/
-//
-//        visc_numerics->ComputeResidual(Residual, Jacobian_i, Jacobian_j, config);
-//        LinSysRes.SubtractBlock(iPoint, Residual);
-//
-//        /*--- Jacobian contribution for implicit integration ---*/
-//
-//        if (implicit)
-//          Jacobian.SubtractBlock(iPoint, iPoint, Jacobian_i);
-//      }
+      //      /*--- Viscous contribution, commented out because serious convergence problems ---*/
+      //
+      //      if (viscous) {
+      //
+      //        /*--- Set laminar and eddy viscosity at the infinity ---*/
+      //
+      //        V_inlet[nDim+5] = node[iPoint]->GetLaminarViscosity();
+      //        V_inlet[nDim+6] = node[iPoint]->GetEddyViscosity();
+      //
+      //        /*--- Set the normal vector and the coordinates ---*/
+      //
+      //        visc_numerics->SetNormal(Normal);
+      //        visc_numerics->SetCoord(geometry->node[iPoint]->GetCoord(), geometry->node[Point_Normal]->GetCoord());
+      //
+      //        /*--- Primitive variables, and gradient ---*/
+      //
+      //        visc_numerics->SetPrimitive(V_domain, V_inlet);
+      //        visc_numerics->SetPrimVarGradient(node[iPoint]->GetGradient_Primitive(), node[iPoint]->GetGradient_Primitive());
+      //
+      //        /*--- Turbulent kinetic energy ---*/
+      //
+      //        if (config->GetKind_Turb_Model() == SST)
+      //          visc_numerics->SetTurbKineticEnergy(solver_container[TURB_SOL]->node[iPoint]->GetSolution(0), solver_container[TURB_SOL]->node[iPoint]->GetSolution(0));
+      //
+      //        /*--- Set the wall shear stress values (wall functions) to -1 (no evaluation using wall functions) ---*/
+      //
+      //        visc_numerics->SetTauWall(-1.0, -1.0);
+      //
+      //        /*--- Compute and update residual ---*/
+      //
+      //        visc_numerics->ComputeResidual(Residual, Jacobian_i, Jacobian_j, config);
+      //        LinSysRes.SubtractBlock(iPoint, Residual);
+      //
+      //        /*--- Jacobian contribution for implicit integration ---*/
+      //
+      //        if (implicit)
+      //          Jacobian.SubtractBlock(iPoint, iPoint, Jacobian_i);
+      //      }
       
     }
   }
@@ -11099,44 +10876,44 @@ void CEulerSolver::BC_Supersonic_Outlet(CGeometry *geometry, CSolver **solver_co
       if (implicit)
         Jacobian.AddBlock(iPoint, iPoint, Jacobian_i);
 
- //     /*--- Viscous contribution, commented out because serious convergence problems ---*/
- //
- //     if (viscous) {
- //
- //       /*--- Set laminar and eddy viscosity at the infinity ---*/
- //
- //       V_outlet[nDim+5] = node[iPoint]->GetLaminarViscosity();
- //       V_outlet[nDim+6] = node[iPoint]->GetEddyViscosity();
- //
- //       /*--- Set the normal vector and the coordinates ---*/
- //
- //       visc_numerics->SetNormal(Normal);
- //       visc_numerics->SetCoord(geometry->node[iPoint]->GetCoord(), geometry->node[Point_Normal]->GetCoord());
- //
- //       /*--- Primitive variables, and gradient ---*/
- //
- //       visc_numerics->SetPrimitive(V_domain, V_outlet);
- //       visc_numerics->SetPrimVarGradient(node[iPoint]->GetGradient_Primitive(), node[iPoint]->GetGradient_Primitive());
- //
- //       /*--- Turbulent kinetic energy ---*/
- //
- //       if (config->GetKind_Turb_Model() == SST)
- //         visc_numerics->SetTurbKineticEnergy(solver_container[TURB_SOL]->node[iPoint]->GetSolution(0), solver_container[TURB_SOL]->node[iPoint]->GetSolution(0));
-//
-//        /*--- Set the wall shear stress values (wall functions) to -1 (no evaluation using wall functions) ---*/
-//
-//        visc_numerics->SetTauWall(-1.0, -1.0);
-//
-//        /*--- Compute and update residual ---*/
-//
-//        visc_numerics->ComputeResidual(Residual, Jacobian_i, Jacobian_j, config);
-//        LinSysRes.SubtractBlock(iPoint, Residual);
-//
-//        /*--- Jacobian contribution for implicit integration ---*/
-//
-//        if (implicit)
-//          Jacobian.SubtractBlock(iPoint, iPoint, Jacobian_i);
-//      }
+      //     /*--- Viscous contribution, commented out because serious convergence problems ---*/
+      //
+      //     if (viscous) {
+      //
+      //       /*--- Set laminar and eddy viscosity at the infinity ---*/
+      //
+      //       V_outlet[nDim+5] = node[iPoint]->GetLaminarViscosity();
+      //       V_outlet[nDim+6] = node[iPoint]->GetEddyViscosity();
+      //
+      //       /*--- Set the normal vector and the coordinates ---*/
+      //
+      //       visc_numerics->SetNormal(Normal);
+      //       visc_numerics->SetCoord(geometry->node[iPoint]->GetCoord(), geometry->node[Point_Normal]->GetCoord());
+      //
+      //       /*--- Primitive variables, and gradient ---*/
+      //
+      //       visc_numerics->SetPrimitive(V_domain, V_outlet);
+      //       visc_numerics->SetPrimVarGradient(node[iPoint]->GetGradient_Primitive(), node[iPoint]->GetGradient_Primitive());
+      //
+      //       /*--- Turbulent kinetic energy ---*/
+      //
+      //       if (config->GetKind_Turb_Model() == SST)
+      //         visc_numerics->SetTurbKineticEnergy(solver_container[TURB_SOL]->node[iPoint]->GetSolution(0), solver_container[TURB_SOL]->node[iPoint]->GetSolution(0));
+      //
+      //        /*--- Set the wall shear stress values (wall functions) to -1 (no evaluation using wall functions) ---*/
+      //
+      //        visc_numerics->SetTauWall(-1.0, -1.0);
+      //
+      //        /*--- Compute and update residual ---*/
+      //
+      //        visc_numerics->ComputeResidual(Residual, Jacobian_i, Jacobian_j, config);
+      //        LinSysRes.SubtractBlock(iPoint, Residual);
+      //
+      //        /*--- Jacobian contribution for implicit integration ---*/
+      //
+      //        if (implicit)
+      //          Jacobian.SubtractBlock(iPoint, iPoint, Jacobian_i);
+      //      }
 
     }
   }
@@ -11152,7 +10929,7 @@ void CEulerSolver::BC_Engine_Inflow(CGeometry *geometry, CSolver **solver_contai
   unsigned short iDim;
   unsigned long iVertex, iPoint;
   su2double Pressure, Inflow_Pressure = 0.0, Velocity[3], Velocity2, Entropy, Target_Inflow_MassFlow = 0.0, Target_Inflow_Mach = 0.0, Density, Energy,
-  Riemann, Area, UnitNormal[3], Vn, SoundSpeed, Vn_Exit, Inflow_Pressure_inc, Inflow_Pressure_old, Inflow_Mach_old, Inflow_MassFlow_old;
+      Riemann, Area, UnitNormal[3], Vn, SoundSpeed, Vn_Exit, Inflow_Pressure_inc, Inflow_Pressure_old, Inflow_Mach_old, Inflow_MassFlow_old;
   su2double *V_inflow, *V_domain;
 
   bool grid_movement  = config->GetGrid_Movement();
@@ -11323,45 +11100,45 @@ void CEulerSolver::BC_Engine_Inflow(CGeometry *geometry, CSolver **solver_contai
       if (implicit)
         Jacobian.AddBlock(iPoint, iPoint, Jacobian_i);
       
-//      /*--- Viscous contribution, commented out because serious convergence problems ---*/
-//
-//      if (viscous) {
-//
-//        /*--- Set laminar and eddy viscosity at the infinity ---*/
-//
-//        V_inflow[nDim+5] = node[iPoint]->GetLaminarViscosity();
-//        V_inflow[nDim+6] = node[iPoint]->GetEddyViscosity();
-//
-//        /*--- Set the normal vector and the coordinates ---*/
-//
-//        visc_numerics->SetNormal(Normal);
-//        visc_numerics->SetCoord(geometry->node[iPoint]->GetCoord(), geometry->node[Point_Normal]->GetCoord());
-//
-//        /*--- Primitive variables, and gradient ---*/
-//
-//        visc_numerics->SetPrimitive(V_domain, V_inflow);
-//        visc_numerics->SetPrimVarGradient(node[iPoint]->GetGradient_Primitive(), node[iPoint]->GetGradient_Primitive());
-//
-//        /*--- Turbulent kinetic energy ---*/
-//
-//        if (config->GetKind_Turb_Model() == SST)
-//          visc_numerics->SetTurbKineticEnergy(solver_container[TURB_SOL]->node[iPoint]->GetSolution(0), solver_container[TURB_SOL]->node[iPoint]->GetSolution(0));
-//
-//        /*--- Set the wall shear stress values (wall functions) to -1 (no evaluation using wall functions) ---*/
-//
-//        visc_numerics->SetTauWall(-1.0, -1.0);
-//
-//        /*--- Compute and update residual ---*/
-//
-//        visc_numerics->ComputeResidual(Residual, Jacobian_i, Jacobian_j, config);
-//        LinSysRes.SubtractBlock(iPoint, Residual);
-//
-//        /*--- Jacobian contribution for implicit integration ---*/
-//
-//        if (implicit)
-//          Jacobian.SubtractBlock(iPoint, iPoint, Jacobian_i);
-//
-//      }
+      //      /*--- Viscous contribution, commented out because serious convergence problems ---*/
+      //
+      //      if (viscous) {
+      //
+      //        /*--- Set laminar and eddy viscosity at the infinity ---*/
+      //
+      //        V_inflow[nDim+5] = node[iPoint]->GetLaminarViscosity();
+      //        V_inflow[nDim+6] = node[iPoint]->GetEddyViscosity();
+      //
+      //        /*--- Set the normal vector and the coordinates ---*/
+      //
+      //        visc_numerics->SetNormal(Normal);
+      //        visc_numerics->SetCoord(geometry->node[iPoint]->GetCoord(), geometry->node[Point_Normal]->GetCoord());
+      //
+      //        /*--- Primitive variables, and gradient ---*/
+      //
+      //        visc_numerics->SetPrimitive(V_domain, V_inflow);
+      //        visc_numerics->SetPrimVarGradient(node[iPoint]->GetGradient_Primitive(), node[iPoint]->GetGradient_Primitive());
+      //
+      //        /*--- Turbulent kinetic energy ---*/
+      //
+      //        if (config->GetKind_Turb_Model() == SST)
+      //          visc_numerics->SetTurbKineticEnergy(solver_container[TURB_SOL]->node[iPoint]->GetSolution(0), solver_container[TURB_SOL]->node[iPoint]->GetSolution(0));
+      //
+      //        /*--- Set the wall shear stress values (wall functions) to -1 (no evaluation using wall functions) ---*/
+      //
+      //        visc_numerics->SetTauWall(-1.0, -1.0);
+      //
+      //        /*--- Compute and update residual ---*/
+      //
+      //        visc_numerics->ComputeResidual(Residual, Jacobian_i, Jacobian_j, config);
+      //        LinSysRes.SubtractBlock(iPoint, Residual);
+      //
+      //        /*--- Jacobian contribution for implicit integration ---*/
+      //
+      //        if (implicit)
+      //          Jacobian.SubtractBlock(iPoint, iPoint, Jacobian_i);
+      //
+      //      }
       
     }
   }
@@ -11542,7 +11319,7 @@ void CEulerSolver::BC_Engine_Exhaust(CGeometry *geometry, CSolver **solver_conta
         V_exhaust[nDim+3] = Energy + Pressure/Density;
         V_exhaust[nDim+4] = sqrt(SoundSpeed2);
         
-      } 
+      }
       /*--- The flow goes in the wrong direction ---*/
 
       else {
@@ -11577,45 +11354,45 @@ void CEulerSolver::BC_Engine_Exhaust(CGeometry *geometry, CSolver **solver_conta
       if (implicit)
         Jacobian.AddBlock(iPoint, iPoint, Jacobian_i);
 
-//      /*--- Viscous contribution, commented out because serious convergence problems ---*/
-//
-//      if (viscous) {
-//
-//        /*--- Set laminar and eddy viscosity at the infinity ---*/
-//
-//        V_exhaust[nDim+5] = node[iPoint]->GetLaminarViscosity();
-//        V_exhaust[nDim+6] = node[iPoint]->GetEddyViscosity();
-//
-//        /*--- Set the normal vector and the coordinates ---*/
-//
-//        visc_numerics->SetNormal(Normal);
-//        visc_numerics->SetCoord(geometry->node[iPoint]->GetCoord(), geometry->node[Point_Normal]->GetCoord());
-//
-//        /*--- Primitive variables, and gradient ---*/
-//
-//        visc_numerics->SetPrimitive(V_domain, V_exhaust);
-//        visc_numerics->SetPrimVarGradient(node[iPoint]->GetGradient_Primitive(), node[iPoint]->GetGradient_Primitive());
-//
-//        /*--- Turbulent kinetic energy ---*/
-//
-//        if (config->GetKind_Turb_Model() == SST)
-//          visc_numerics->SetTurbKineticEnergy(solver_container[TURB_SOL]->node[iPoint]->GetSolution(0), solver_container[TURB_SOL]->node[iPoint]->GetSolution(0));
-//
-//        /*--- Set the wall shear stress values (wall functions) to -1 (no evaluation using wall functions) ---*/
-//
-//        visc_numerics->SetTauWall(-1.0, -1.0);
-//
-//        /*--- Compute and update residual ---*/
-//
-//        visc_numerics->ComputeResidual(Residual, Jacobian_i, Jacobian_j, config);
-//        LinSysRes.SubtractBlock(iPoint, Residual);
-//
-//        /*--- Jacobian contribution for implicit integration ---*/
-//
-//        if (implicit)
-//          Jacobian.SubtractBlock(iPoint, iPoint, Jacobian_i);
-//
-//      }
+      //      /*--- Viscous contribution, commented out because serious convergence problems ---*/
+      //
+      //      if (viscous) {
+      //
+      //        /*--- Set laminar and eddy viscosity at the infinity ---*/
+      //
+      //        V_exhaust[nDim+5] = node[iPoint]->GetLaminarViscosity();
+      //        V_exhaust[nDim+6] = node[iPoint]->GetEddyViscosity();
+      //
+      //        /*--- Set the normal vector and the coordinates ---*/
+      //
+      //        visc_numerics->SetNormal(Normal);
+      //        visc_numerics->SetCoord(geometry->node[iPoint]->GetCoord(), geometry->node[Point_Normal]->GetCoord());
+      //
+      //        /*--- Primitive variables, and gradient ---*/
+      //
+      //        visc_numerics->SetPrimitive(V_domain, V_exhaust);
+      //        visc_numerics->SetPrimVarGradient(node[iPoint]->GetGradient_Primitive(), node[iPoint]->GetGradient_Primitive());
+      //
+      //        /*--- Turbulent kinetic energy ---*/
+      //
+      //        if (config->GetKind_Turb_Model() == SST)
+      //          visc_numerics->SetTurbKineticEnergy(solver_container[TURB_SOL]->node[iPoint]->GetSolution(0), solver_container[TURB_SOL]->node[iPoint]->GetSolution(0));
+      //
+      //        /*--- Set the wall shear stress values (wall functions) to -1 (no evaluation using wall functions) ---*/
+      //
+      //        visc_numerics->SetTauWall(-1.0, -1.0);
+      //
+      //        /*--- Compute and update residual ---*/
+      //
+      //        visc_numerics->ComputeResidual(Residual, Jacobian_i, Jacobian_j, config);
+      //        LinSysRes.SubtractBlock(iPoint, Residual);
+      //
+      //        /*--- Jacobian contribution for implicit integration ---*/
+      //
+      //        if (implicit)
+      //          Jacobian.SubtractBlock(iPoint, iPoint, Jacobian_i);
+      //
+      //      }
 
     }
   }
@@ -11662,7 +11439,7 @@ void CEulerSolver::BC_Sym_Plane(CGeometry      *geometry,
   /*---------------------------------------------------------------------------------------------*/
 
   /*--- Normal vector for a random vertex (zero) on this marker (negate for outward convention). ---*/
-  geometry->vertex[val_marker][0]->GetNormal(Normal); 
+  geometry->vertex[val_marker][0]->GetNormal(Normal);
   for (iDim = 0; iDim < nDim; iDim++)
     Normal[iDim] = -Normal[iDim];
 
@@ -11678,25 +11455,25 @@ void CEulerSolver::BC_Sym_Plane(CGeometry      *geometry,
   /*--- Preprocessing: Compute unit tangential, the direction is arbitrary as long as t*n=0 ---*/
   if (config->GetViscous()) {
     switch( nDim ) {
-      case 2: {
-        Tangential[0] = -UnitNormal[1];
-        Tangential[1] =  UnitNormal[0];
-        break;
-      }
-      case 3: {
-        /*--- Find the largest entry index of the UnitNormal, and create Tangential vector based on that. ---*/
-        unsigned short Largest, Arbitrary, Zero;
-        if     (abs(UnitNormal[0]) >= abs(UnitNormal[1]) && 
-                abs(UnitNormal[0]) >= abs(UnitNormal[2])) {Largest=0;Arbitrary=1;Zero=2;}
-        else if(abs(UnitNormal[1]) >= abs(UnitNormal[0]) && 
-                abs(UnitNormal[1]) >= abs(UnitNormal[2])) {Largest=1;Arbitrary=0;Zero=2;}
-        else                                              {Largest=2;Arbitrary=1;Zero=0;}
+    case 2: {
+      Tangential[0] = -UnitNormal[1];
+      Tangential[1] =  UnitNormal[0];
+      break;
+    }
+    case 3: {
+      /*--- Find the largest entry index of the UnitNormal, and create Tangential vector based on that. ---*/
+      unsigned short Largest, Arbitrary, Zero;
+      if     (abs(UnitNormal[0]) >= abs(UnitNormal[1]) &&
+              abs(UnitNormal[0]) >= abs(UnitNormal[2])) {Largest=0;Arbitrary=1;Zero=2;}
+      else if(abs(UnitNormal[1]) >= abs(UnitNormal[0]) &&
+              abs(UnitNormal[1]) >= abs(UnitNormal[2])) {Largest=1;Arbitrary=0;Zero=2;}
+      else                                              {Largest=2;Arbitrary=1;Zero=0;}
 
-        Tangential[Largest] = -UnitNormal[Arbitrary]/sqrt(pow(UnitNormal[Largest],2) + pow(UnitNormal[Arbitrary],2));
-        Tangential[Arbitrary] =  UnitNormal[Largest]/sqrt(pow(UnitNormal[Largest],2) + pow(UnitNormal[Arbitrary],2));
-        Tangential[Zero] =  0.0;
-        break;
-      }
+      Tangential[Largest] = -UnitNormal[Arbitrary]/sqrt(pow(UnitNormal[Largest],2) + pow(UnitNormal[Arbitrary],2));
+      Tangential[Arbitrary] =  UnitNormal[Largest]/sqrt(pow(UnitNormal[Largest],2) + pow(UnitNormal[Arbitrary],2));
+      Tangential[Zero] =  0.0;
+      break;
+    }
     }
   }
   
@@ -11731,8 +11508,8 @@ void CEulerSolver::BC_Sym_Plane(CGeometry      *geometry,
       /*--- Get current solution at this boundary node ---*/
       V_domain = node[iPoint]->GetPrimitive();
       
-      /*--- Set the reflected state based on the boundary node. Scalars are copied and 
-            the velocity is mirrored along the symmetry boundary, i.e. the velocity in 
+      /*--- Set the reflected state based on the boundary node. Scalars are copied and
+            the velocity is mirrored along the symmetry boundary, i.e. the velocity in
             normal direction is substracted twice. ---*/
       for(iVar = 0; iVar < nPrimVar; iVar++)
         V_reflected[iVar] = node[iPoint]->GetPrimitive(iVar);
@@ -11783,7 +11560,7 @@ void CEulerSolver::BC_Sym_Plane(CGeometry      *geometry,
         /*--- For viscous Fluxes also the gradients of the primitives need to be determined.
               1. The gradients of scalars are mirrored along the sym plane just as velocity for the primitives
               2. The gradients of the velocity components need more attention, i.e. the gradient of the
-                 normal velocity in tangential direction is mirrored and the gradient of the tangential velocity in 
+                 normal velocity in tangential direction is mirrored and the gradient of the tangential velocity in
                  normal direction is mirrored. ---*/
 
         /*--- Get gradients of primitives of boundary cell ---*/
@@ -11792,7 +11569,7 @@ void CEulerSolver::BC_Sym_Plane(CGeometry      *geometry,
             Grad_Reflected[iVar][iDim] = node[iPoint]->GetGradient_Primitive(iVar, iDim);
         
         /*--- Reflect the gradients for all scalars including the velocity components.
-              The gradients of the velocity components are set later with the 
+              The gradients of the velocity components are set later with the
               correct values: grad(V)_r = grad(V) - 2 [grad(V)*n]n, V beeing any primitive ---*/
         for (iVar = 0; iVar < nPrimVarGrad; iVar++) {
           if(iVar == 0 || iVar > nDim) { // Exclude velocity component gradients
@@ -11801,8 +11578,8 @@ void CEulerSolver::BC_Sym_Plane(CGeometry      *geometry,
             ProjGradient = 0.0;
             for (iDim = 0; iDim < nDim; iDim++)
               ProjGradient += Grad_Reflected[iVar][iDim]*UnitNormal[iDim];
-              
-            for (iDim = 0; iDim < nDim; iDim++)           
+
+            for (iDim = 0; iDim < nDim; iDim++)
               Grad_Reflected[iVar][iDim] = Grad_Reflected[iVar][iDim] - 2.0 * ProjGradient*UnitNormal[iDim];
           }
         }
@@ -11851,7 +11628,7 @@ void CEulerSolver::BC_Sym_Plane(CGeometry      *geometry,
           visc_numerics->SetTurbKineticEnergy(solver_container[TURB_SOL]->node[iPoint]->GetSolution(0),
                                               solver_container[TURB_SOL]->node[iPoint]->GetSolution(0));
         
-        /*--- Compute and update residual. Note that the viscous shear stress tensor is computed in the 
+        /*--- Compute and update residual. Note that the viscous shear stress tensor is computed in the
               following routine based upon the velocity-component gradients. ---*/
         visc_numerics->ComputeResidual(Residual, Jacobian_i, Jacobian_j, config);
         
@@ -11877,7 +11654,7 @@ void CEulerSolver::BC_Sym_Plane(CGeometry      *geometry,
 }
 
 void CEulerSolver::BC_Fluid_Interface(CGeometry *geometry, CSolver **solver_container, CNumerics *conv_numerics, CNumerics *visc_numerics,
-                                         CConfig *config) {
+                                      CConfig *config) {
 
   unsigned long iVertex, jVertex, iPoint, Point_Normal = 0;
   unsigned short iDim, iVar, iMarker, nDonorVertex;
@@ -11933,11 +11710,11 @@ void CEulerSolver::BC_Fluid_Interface(CGeometry *geometry, CSolver **solver_cont
               Secondary_i = node[iPoint]->GetSecondary();
 
               P_static   = PrimVar_j[nDim+1];
-              rho_static = PrimVar_j[nDim+2];           
+              rho_static = PrimVar_j[nDim+2];
               FluidModel->SetTDState_Prho(P_static, rho_static);
 
               Secondary_j[0] = FluidModel->GetdPdrho_e();
-              Secondary_j[1] = FluidModel->GetdPde_rho();  
+              Secondary_j[1] = FluidModel->GetdPde_rho();
 
               conv_numerics->SetSecondary(Secondary_i, Secondary_j);
             }
@@ -11945,7 +11722,7 @@ void CEulerSolver::BC_Fluid_Interface(CGeometry *geometry, CSolver **solver_cont
             /*--- Set the normal vector ---*/
 
             geometry->vertex[iMarker][iVertex]->GetNormal(Normal);
-            for (iDim = 0; iDim < nDim; iDim++) 
+            for (iDim = 0; iDim < nDim; iDim++)
               Normal[iDim] = -Normal[iDim];
 
             conv_numerics->SetNormal(Normal);
@@ -11980,8 +11757,8 @@ void CEulerSolver::BC_Fluid_Interface(CGeometry *geometry, CSolver **solver_cont
             /*--- Loop over the nDonorVertexes and compute the averaged flux ---*/
 
             for (jVertex = 0; jVertex < nDonorVertex; jVertex++){
-              PrimVar_j[nDim+5] = GetSlidingState(iMarker, iVertex, nDim+5, jVertex); 
-              PrimVar_j[nDim+6] = GetSlidingState(iMarker, iVertex, nDim+6, jVertex); 
+              PrimVar_j[nDim+5] = GetSlidingState(iMarker, iVertex, nDim+5, jVertex);
+              PrimVar_j[nDim+6] = GetSlidingState(iMarker, iVertex, nDim+6, jVertex);
 
               /*--- Get the weight computed in the interpolator class for the j-th donor vertex ---*/
 
@@ -12179,9 +11956,9 @@ void CEulerSolver::BC_ActDisk(CGeometry *geometry, CSolver **solver_container, C
   unsigned short iDim;
   unsigned long iVertex, iPoint, GlobalIndex_donor, GlobalIndex;
   su2double Pressure, Velocity[3], Target_Press_Jump, Target_Temp_Jump,
-  Velocity2, Entropy, Density, Energy, Riemann, Vn, SoundSpeed, Vn_Inlet, Mach_Outlet,
-  Area, UnitNormal[3], *V_outlet, *V_domain, *V_inlet, P_Total, T_Total, H_Total, Temperature,
-  Mach2, SoundSpeed2, SoundSpeed_Total2, Vel_Mag, alpha, aa, bb, cc, dd;
+      Velocity2, Entropy, Density, Energy, Riemann, Vn, SoundSpeed, Vn_Inlet, Mach_Outlet,
+      Area, UnitNormal[3], *V_outlet, *V_domain, *V_inlet, P_Total, T_Total, H_Total, Temperature,
+      Mach2, SoundSpeed2, SoundSpeed_Total2, Vel_Mag, alpha, aa, bb, cc, dd;
   su2double Factor, P_static, T_static, SoS_outlet, Rho_outlet, Rho_inlet;
   su2double Vel_normal_inlet[3], Vel_tangent_inlet[3], Vel_inlet[3];
   su2double Vel_normal_outlet[3], Vel_tangent_outlet[3], Vel_outlet[3];
@@ -12189,14 +11966,14 @@ void CEulerSolver::BC_ActDisk(CGeometry *geometry, CSolver **solver_container, C
   su2double Vel_normal_outlet_, Vel_outlet_;
 
   su2double Pressure_out, Density_out, SoundSpeed_out, Velocity2_out,
-  Mach_out, Pressure_in, Density_in, SoundSpeed_in, Velocity2_in,
-  Mach_in, PressureAdj, TemperatureAdj;
+      Mach_out, Pressure_in, Density_in, SoundSpeed_in, Velocity2_in,
+      Mach_in, PressureAdj, TemperatureAdj;
 
   bool implicit           = (config->GetKind_TimeIntScheme_Flow() == EULER_IMPLICIT);
   su2double Gas_Constant  = config->GetGas_ConstantND();
   bool grid_movement      = config->GetGrid_Movement();
   bool tkeNeeded          = (((config->GetKind_Solver() == RANS )|| (config->GetKind_Solver() == DISC_ADJ_RANS)) &&
-                            (config->GetKind_Turb_Model() == SST));
+                             (config->GetKind_Turb_Model() == SST));
   bool ratio              = (config->GetActDisk_Jump() == RATIO);
   su2double SecondaryFlow = config->GetSecondaryFlow_ActDisk();
 
@@ -12260,9 +12037,9 @@ void CEulerSolver::BC_ActDisk(CGeometry *geometry, CSolver **solver_container, C
           Mach_in  = sqrt(Velocity2_in)/SoundSpeed_in;
 
           PressureAdj    = pow( 1.0 + Mach_out * Mach_out * 0.5 * (Gamma - 1.0), Gamma / (Gamma - 1.0)) /
-          pow( 1.0 + Mach_in * Mach_in * 0.5 * (Gamma - 1.0), Gamma / (Gamma - 1.0));
+              pow( 1.0 + Mach_in * Mach_in * 0.5 * (Gamma - 1.0), Gamma / (Gamma - 1.0));
           TemperatureAdj = (1.0 + Mach_out * Mach_out * 0.5 * (Gamma - 1.0)) /
-          (1.0 + Mach_in * Mach_in * 0.5 * (Gamma - 1.0));
+              (1.0 + Mach_in * Mach_in * 0.5 * (Gamma - 1.0));
 
         }
 
@@ -12297,9 +12074,9 @@ void CEulerSolver::BC_ActDisk(CGeometry *geometry, CSolver **solver_container, C
           Mach_in  = sqrt(Velocity2_in)/SoundSpeed_in;
 
           PressureAdj    = pow( 1.0 + Mach_out * Mach_out * 0.5 * (Gamma - 1.0), Gamma / (Gamma - 1.0)) /
-          pow( 1.0 + Mach_in * Mach_in * 0.5 * (Gamma - 1.0), Gamma / (Gamma - 1.0));
+              pow( 1.0 + Mach_in * Mach_in * 0.5 * (Gamma - 1.0), Gamma / (Gamma - 1.0));
           TemperatureAdj = (1.0 + Mach_out * Mach_out * 0.5 * (Gamma - 1.0)) /
-          (1.0 + Mach_in * Mach_in * 0.5 * (Gamma - 1.0));
+              (1.0 + Mach_in * Mach_in * 0.5 * (Gamma - 1.0));
         }
 
         if (ratio) {
@@ -12529,52 +12306,52 @@ void CEulerSolver::BC_ActDisk(CGeometry *geometry, CSolver **solver_container, C
 
       if (implicit) Jacobian.AddBlock(iPoint, iPoint, Jacobian_i);
 
-//      /*--- Viscous contribution, commented out because serious convergence problems ---*/
-//
-//      if (viscous) {
-//
-//        /*--- Set laminar and eddy viscosity at the infinity ---*/
-//
-//        if (val_inlet_surface) {
-//          V_inlet[nDim+5] = node[iPoint]->GetLaminarViscosity();
-//          V_inlet[nDim+6] = node[iPoint]->GetEddyViscosity();
-//        }
-//        else {
-//          V_outlet[nDim+5] = node[iPoint]->GetLaminarViscosity();
-//          V_outlet[nDim+6] = node[iPoint]->GetEddyViscosity();
-//        }
-//
-//        /*--- Set the normal vector and the coordinates ---*/
-//
-//        visc_numerics->SetNormal(Normal);
-//        visc_numerics->SetCoord(geometry->node[iPoint]->GetCoord(), geometry->node[iPoint_Normal]->GetCoord());
-//
-//        /*--- Primitive variables, and gradient ---*/
-//
-//        if (val_inlet_surface) visc_numerics->SetPrimitive(V_domain, V_inlet);
-//        else visc_numerics->SetPrimitive(V_domain, V_outlet);
-//
-//        visc_numerics->SetPrimVarGradient(node[iPoint]->GetGradient_Primitive(), node[iPoint]->GetGradient_Primitive());
-//
-//        /*--- Turbulent kinetic energy ---*/
-//
-//        if (config->GetKind_Turb_Model() == SST)
-//          visc_numerics->SetTurbKineticEnergy(solver_container[TURB_SOL]->node[iPoint]->GetSolution(0), solver_container[TURB_SOL]->node[iPoint]->GetSolution(0));
-//
-//        /*--- Set the wall shear stress values (wall functions) to -1 (no evaluation using wall functions) ---*/
-//
-//        visc_numerics->SetTauWall(-1.0, -1.0);
-//
-//        /*--- Compute and update residual ---*/
-//
-//        visc_numerics->ComputeResidual(Residual, Jacobian_i, Jacobian_j, config);
-//        LinSysRes.SubtractBlock(iPoint, Residual);
-//
-//        /*--- Jacobian contribution for implicit integration ---*/
-//
-//        if (implicit) Jacobian.SubtractBlock(iPoint, iPoint, Jacobian_i);
-//
-//      }
+      //      /*--- Viscous contribution, commented out because serious convergence problems ---*/
+      //
+      //      if (viscous) {
+      //
+      //        /*--- Set laminar and eddy viscosity at the infinity ---*/
+      //
+      //        if (val_inlet_surface) {
+      //          V_inlet[nDim+5] = node[iPoint]->GetLaminarViscosity();
+      //          V_inlet[nDim+6] = node[iPoint]->GetEddyViscosity();
+      //        }
+      //        else {
+      //          V_outlet[nDim+5] = node[iPoint]->GetLaminarViscosity();
+      //          V_outlet[nDim+6] = node[iPoint]->GetEddyViscosity();
+      //        }
+      //
+      //        /*--- Set the normal vector and the coordinates ---*/
+      //
+      //        visc_numerics->SetNormal(Normal);
+      //        visc_numerics->SetCoord(geometry->node[iPoint]->GetCoord(), geometry->node[iPoint_Normal]->GetCoord());
+      //
+      //        /*--- Primitive variables, and gradient ---*/
+      //
+      //        if (val_inlet_surface) visc_numerics->SetPrimitive(V_domain, V_inlet);
+      //        else visc_numerics->SetPrimitive(V_domain, V_outlet);
+      //
+      //        visc_numerics->SetPrimVarGradient(node[iPoint]->GetGradient_Primitive(), node[iPoint]->GetGradient_Primitive());
+      //
+      //        /*--- Turbulent kinetic energy ---*/
+      //
+      //        if (config->GetKind_Turb_Model() == SST)
+      //          visc_numerics->SetTurbKineticEnergy(solver_container[TURB_SOL]->node[iPoint]->GetSolution(0), solver_container[TURB_SOL]->node[iPoint]->GetSolution(0));
+      //
+      //        /*--- Set the wall shear stress values (wall functions) to -1 (no evaluation using wall functions) ---*/
+      //
+      //        visc_numerics->SetTauWall(-1.0, -1.0);
+      //
+      //        /*--- Compute and update residual ---*/
+      //
+      //        visc_numerics->ComputeResidual(Residual, Jacobian_i, Jacobian_j, config);
+      //        LinSysRes.SubtractBlock(iPoint, Residual);
+      //
+      //        /*--- Jacobian contribution for implicit integration ---*/
+      //
+      //        if (implicit) Jacobian.SubtractBlock(iPoint, iPoint, Jacobian_i);
+      //
+      //      }
 
     }
 
@@ -12606,7 +12383,76 @@ void CEulerSolver::BC_Periodic(CGeometry *geometry, CSolver **solver_container,
 void CEulerSolver::BC_Dirichlet(CGeometry *geometry, CSolver **solver_container,
                                 CConfig *config, unsigned short val_marker) { }
 
-void CEulerSolver::BC_Custom(CGeometry *geometry, CSolver **solver_container, CNumerics *numerics, CConfig *config, unsigned short val_marker) { }
+void CEulerSolver::BC_Custom(CGeometry      *geometry,
+                             CSolver        **solver_container,
+                             CNumerics      *conv_numerics,
+                             CNumerics      *visc_numerics,
+                             CConfig        *config,
+                             unsigned short val_marker) {
+  
+  /* Check for a verification solution. */
+  
+  if (VerificationSolution) {
+    
+    unsigned short iVar;
+    unsigned long iVertex, iPoint, total_index;
+    
+    bool implicit = (config->GetKind_TimeIntScheme_Flow() == EULER_IMPLICIT);
+    
+    /*--- Get the physical time. ---*/
+    
+    su2double time = 0.0;
+    if (config->GetUnsteady_Simulation()) time = config->GetPhysicalTime();
+    
+    /*--- Loop over all the vertices on this boundary marker ---*/
+    
+    for (iVertex = 0; iVertex < geometry->nVertex[val_marker]; iVertex++) {
+      
+      /*--- Get the point index for the current node. ---*/
+      
+      iPoint = geometry->vertex[val_marker][iVertex]->GetNode();
+      
+      /*--- Check if the node belongs to the domain (i.e, not a halo node) ---*/
+      
+      if (geometry->node[iPoint]->GetDomain()) {
+        
+        /*--- Get the coordinates for the current node. ---*/
+        
+        const su2double *coor = geometry->node[iPoint]->GetCoord();
+        
+        /*--- Get the conservative state from the verification solution. ---*/
+        
+        VerificationSolution->GetBCState(coor, time, Solution);
+        
+        /*--- For verification cases, we will apply a strong Dirichlet
+         condition by setting the solution values at the boundary nodes
+         directly and setting the residual to zero at those nodes. ---*/
+        
+        node[iPoint]->SetSolution_Old(Solution);
+        node[iPoint]->SetSolution(Solution);
+        node[iPoint]->SetRes_TruncErrorZero();
+        LinSysRes.SetBlock_Zero(iPoint);
+        
+        /*--- Adjust rows of the Jacobian (includes 1 in the diagonal) ---*/
+        
+        if (implicit){
+          for (iVar = 0; iVar < nVar; iVar++) {
+            total_index = iPoint*nVar+iVar;
+            Jacobian.DeleteValsRowi(total_index);
+          }
+        }
+        
+      }
+    }
+    
+  } else {
+    
+    /* The user must specify the custom BC's here. */
+    SU2_MPI::Error("Implement customized boundary conditions here.", CURRENT_FUNCTION);
+    
+  }
+  
+}
 
 void CEulerSolver::SetResidual_DualTime(CGeometry *geometry, CSolver **solver_container, CConfig *config,
                                         unsigned short iRKStep, unsigned short iMesh, unsigned short RunTime_EqSystem) {
@@ -12656,7 +12502,7 @@ void CEulerSolver::SetResidual_DualTime(CGeometry *geometry, CSolver **solver_co
           Residual[iVar] = (U_time_nP1[iVar] - U_time_n[iVar])*Volume_nP1 / TimeStep;
         if (config->GetUnsteady_Simulation() == DT_STEPPING_2ND)
           Residual[iVar] = ( 3.0*U_time_nP1[iVar] - 4.0*U_time_n[iVar]
-                            +1.0*U_time_nM1[iVar])*Volume_nP1 / (2.0*TimeStep);
+                             +1.0*U_time_nM1[iVar])*Volume_nP1 / (2.0*TimeStep);
       }
 
       /*--- Store the residual and compute the Jacobian contribution due
@@ -12728,32 +12574,32 @@ void CEulerSolver::SetResidual_DualTime(CGeometry *geometry, CSolver **solver_co
     for (iMarker = 0; iMarker < geometry->GetnMarker(); iMarker++) {
       if ((config->GetMarker_All_KindBC(iMarker) != INTERNAL_BOUNDARY)  &&
           (config->GetMarker_All_KindBC(iMarker) != PERIODIC_BOUNDARY)) {
-      for (iVertex = 0; iVertex < geometry->GetnVertex(iMarker); iVertex++) {
+        for (iVertex = 0; iVertex < geometry->GetnVertex(iMarker); iVertex++) {
 
-        /*--- Get the index for node i plus the boundary face normal ---*/
+          /*--- Get the index for node i plus the boundary face normal ---*/
 
-        iPoint = geometry->vertex[iMarker][iVertex]->GetNode();
-        Normal = geometry->vertex[iMarker][iVertex]->GetNormal();
+          iPoint = geometry->vertex[iMarker][iVertex]->GetNode();
+          Normal = geometry->vertex[iMarker][iVertex]->GetNormal();
 
-        /*--- Grid velocities stored at boundary node i ---*/
+          /*--- Grid velocities stored at boundary node i ---*/
 
-        GridVel_i = geometry->node[iPoint]->GetGridVel();
+          GridVel_i = geometry->node[iPoint]->GetGridVel();
 
-        /*--- Compute the GCL term by dotting the grid velocity with the face
+          /*--- Compute the GCL term by dotting the grid velocity with the face
          normal. The normal is negated to match the boundary convention. ---*/
 
-        Residual_GCL = 0.0;
-        for (iDim = 0; iDim < nDim; iDim++)
-          Residual_GCL -= 0.5*(GridVel_i[iDim]+GridVel_i[iDim])*Normal[iDim];
+          Residual_GCL = 0.0;
+          for (iDim = 0; iDim < nDim; iDim++)
+            Residual_GCL -= 0.5*(GridVel_i[iDim]+GridVel_i[iDim])*Normal[iDim];
 
-        /*--- Compute the GCL component of the source term for node i ---*/
+          /*--- Compute the GCL component of the source term for node i ---*/
 
-        U_time_n = node[iPoint]->GetSolution_time_n();
-        for (iVar = 0; iVar < nVar; iVar++)
-          Residual[iVar] = U_time_n[iVar]*Residual_GCL;
-        LinSysRes.AddBlock(iPoint, Residual);
+          U_time_n = node[iPoint]->GetSolution_time_n();
+          for (iVar = 0; iVar < nVar; iVar++)
+            Residual[iVar] = U_time_n[iVar]*Residual_GCL;
+          LinSysRes.AddBlock(iPoint, Residual);
 
-      }
+        }
       }
     }
 
@@ -12786,7 +12632,7 @@ void CEulerSolver::SetResidual_DualTime(CGeometry *geometry, CSolver **solver_co
           Residual[iVar] = (U_time_nP1[iVar] - U_time_n[iVar])*(Volume_nP1/TimeStep);
         if (config->GetUnsteady_Simulation() == DT_STEPPING_2ND)
           Residual[iVar] = (U_time_nP1[iVar] - U_time_n[iVar])*(3.0*Volume_nP1/(2.0*TimeStep))
-          + (U_time_nM1[iVar] - U_time_n[iVar])*(Volume_nM1/(2.0*TimeStep));
+              + (U_time_nM1[iVar] - U_time_n[iVar])*(Volume_nM1/(2.0*TimeStep));
       }
       /*--- Store the residual and compute the Jacobian contribution due
        to the dual time source term. ---*/
@@ -12816,17 +12662,17 @@ void CEulerSolver::ComputeResidual_Multizone(CGeometry *geometry, CConfig *confi
   /*--- Set Residuals to zero ---*/
 
   for (iVar = 0; iVar < nVar; iVar++){
-      SetRes_BGS(iVar,0.0);
-      SetRes_Max_BGS(iVar,0.0,0);
+    SetRes_BGS(iVar,0.0);
+    SetRes_Max_BGS(iVar,0.0,0);
   }
 
   /*--- Set the residuals ---*/
   for (iPoint = 0; iPoint < nPointDomain; iPoint++){
-      for (iVar = 0; iVar < nVar; iVar++){
-          residual = node[iPoint]->GetSolution(iVar) - node[iPoint]->Get_BGSSolution_k(iVar);
-          AddRes_BGS(iVar,residual*residual);
-          AddRes_Max_BGS(iVar,fabs(residual),geometry->node[iPoint]->GetGlobalIndex(),geometry->node[iPoint]->GetCoord());
-      }
+    for (iVar = 0; iVar < nVar; iVar++){
+      residual = node[iPoint]->GetSolution(iVar) - node[iPoint]->Get_BGSSolution_k(iVar);
+      AddRes_BGS(iVar,residual*residual);
+      AddRes_Max_BGS(iVar,fabs(residual),geometry->node[iPoint]->GetGlobalIndex(),geometry->node[iPoint]->GetCoord());
+    }
   }
 
   SetResidual_BGS(geometry, config);
@@ -12844,6 +12690,105 @@ void CEulerSolver::UpdateSolution_BGS(CGeometry *geometry, CConfig *config){
 
   }
 
+}
+
+void CEulerSolver::ComputeVerificationError(CGeometry *geometry,
+                                            CConfig   *config) {
+
+  /*--- The errors only need to be computed on the finest grid. ---*/
+  if(MGLevel != MESH_0) return;
+
+  /*--- If this is a verification case, we can compute the global
+   error metrics by using the difference between the local error
+   and the known solution at each DOF. This is then collected into
+   RMS (L2) and maximum (Linf) global error norms. From these
+   global measures, one can compute the order of accuracy. ---*/
+  
+  bool write_heads = ((((config->GetExtIter() % (config->GetWrt_Con_Freq()*40)) == 0)
+                       && (config->GetExtIter()!= 0))
+                      || (config->GetExtIter() == 1));
+  if( !write_heads ) return;
+
+  /*--- Check if there actually is an exact solution for this
+        verification case, if computed at all. ---*/
+  if (VerificationSolution) {
+    if (VerificationSolution->ExactSolutionKnown()) {
+
+      /*--- Get the physical time if necessary. ---*/
+      su2double time = 0.0;
+      if (config->GetUnsteady_Simulation()) time = config->GetPhysicalTime();
+
+      /*--- Reset the global error measures to zero. ---*/
+      for (unsigned short iVar = 0; iVar < nVar; iVar++) {
+        VerificationSolution->SetError_RMS(iVar, 0.0);
+        VerificationSolution->SetError_Max(iVar, 0.0, 0);
+      }
+
+      /*--- Loop over all owned points. ---*/
+      for (unsigned long iPoint = 0; iPoint < nPointDomain; iPoint++) {
+
+        /* Set the pointers to the coordinates and solution of this DOF. */
+        const su2double *coor = geometry->node[iPoint]->GetCoord();
+        su2double *solDOF     = node[iPoint]->GetSolution();
+
+        /* Get local error from the verification solution class. */
+        vector<su2double> error(nVar,0.0);
+        VerificationSolution->GetLocalError(coor, time, solDOF, error.data());
+
+        /* Increment the global error measures */
+        for (unsigned short iVar = 0; iVar < nVar; iVar++) {
+          VerificationSolution->AddError_RMS(iVar, error[iVar]*error[iVar]);
+          VerificationSolution->AddError_Max(iVar, fabs(error[iVar]),
+                                             geometry->node[iPoint]->GetGlobalIndex(),
+                                             geometry->node[iPoint]->GetCoord());
+        }
+      }
+
+      /* Finalize the calculation of the global error measures. */
+      VerificationSolution->SetVerificationError(geometry->GetGlobal_nPointDomain(), config);
+
+      /*--- Screen output of the error metrics. This can be improved
+       once the new output classes are in place. ---*/
+
+      if ((rank == MASTER_NODE) && (geometry->GetMGLevel() == MESH_0)) {
+
+        cout.precision(5);
+        cout.setf(ios::scientific, ios::floatfield);
+
+        if (!config->GetDiscrete_Adjoint()) {
+
+          cout << endl   << "------------------------ Global Error Analysis --------------------------" << endl;
+
+          cout << setw(20) << "RMS Error  [Rho]: " << setw(12) << VerificationSolution->GetError_RMS(0) << "     | ";
+          cout << setw(20) << "Max Error  [Rho]: " << setw(12) << VerificationSolution->GetError_Max(0);
+          cout << endl;
+
+          cout << setw(20) << "RMS Error [RhoU]: " << setw(12) << VerificationSolution->GetError_RMS(1) << "     | ";
+          cout << setw(20) << "Max Error [RhoU]: " << setw(12) << VerificationSolution->GetError_Max(1);
+          cout << endl;
+
+          cout << setw(20) << "RMS Error [RhoV]: " << setw(12) << VerificationSolution->GetError_RMS(2) << "     | ";
+          cout << setw(20) << "Max Error [RhoV]: " << setw(12) << VerificationSolution->GetError_Max(2);
+          cout << endl;
+
+          if (nDim == 3) {
+            cout << setw(20) << "RMS Error [RhoW]: " << setw(12) << VerificationSolution->GetError_RMS(3) << "     | ";
+            cout << setw(20) << "Max Error [RhoW]: " << setw(12) << VerificationSolution->GetError_Max(3);
+            cout << endl;
+          }
+
+          cout << setw(20) << "RMS Error [RhoE]: " << setw(12) << VerificationSolution->GetError_RMS(nDim+1) << "     | ";
+          cout << setw(20) << "Max Error [RhoE]: " << setw(12) << VerificationSolution->GetError_Max(nDim+1);
+          cout << endl;
+
+          cout << "-------------------------------------------------------------------------" << endl << endl;
+          cout.unsetf(ios_base::floatfield);
+
+        }
+      }
+    }
+  }
+  
 }
 
 void CEulerSolver::LoadRestart(CGeometry **geometry, CSolver ***solver, CConfig *config, int val_iter, bool val_update_geo) {
@@ -12887,7 +12832,7 @@ void CEulerSolver::LoadRestart(CGeometry **geometry, CSolver ***solver, CConfig 
    (that could appear in the restart file before the grid velocities). ---*/
   unsigned short turbVars = 0;
   if (turbulent){
-    if (turb_model == SST) turbVars = 2;  
+    if (turb_model == SST) turbVars = 2;
     else turbVars = 1;
   }
 
@@ -12955,9 +12900,9 @@ void CEulerSolver::LoadRestart(CGeometry **geometry, CSolver ***solver, CConfig 
           geometry[MESH_0]->node[iPoint_Local]->SetGridVel(iDim, GridVel[iDim]);
         }
       }
-        
+
       if (static_fsi && val_update_geo) {
-       /*--- Rewind the index to retrieve the Coords. ---*/
+        /*--- Rewind the index to retrieve the Coords. ---*/
         index = counter*Restart_Vars[1];
         for (iDim = 0; iDim < nDim; iDim++) { Coord[iDim] = Restart_Data[index+iDim];}
 
@@ -12982,8 +12927,8 @@ void CEulerSolver::LoadRestart(CGeometry **geometry, CSolver ***solver, CConfig 
   SU2_MPI::Allreduce(&sbuf_NotMatching, &rbuf_NotMatching, 1, MPI_UNSIGNED_SHORT, MPI_SUM, MPI_COMM_WORLD);
 #endif
   if (rbuf_NotMatching != 0) {
-      SU2_MPI::Error(string("The solution file ") + restart_filename + string(" doesn't match with the mesh file!\n") +
-                     string("It could be empty lines at the end of the file."), CURRENT_FUNCTION);
+    SU2_MPI::Error(string("The solution file ") + restart_filename + string(" doesn't match with the mesh file!\n") +
+                   string("It could be empty lines at the end of the file."), CURRENT_FUNCTION);
   }
 
   /*--- Communicate the loaded solution on the fine grid before we transfer
@@ -13049,8 +12994,8 @@ void CEulerSolver::LoadRestart(CGeometry **geometry, CSolver ***solver, CConfig 
       geometry[iMesh]->SetCoord(geometry[iMeshFine]);
       geometry[iMesh]->SetRestricted_GridVelocity(geometry[iMeshFine], config);
       geometry[iMesh]->SetMaxLength(config);
-      }
     }
+  }
 
   /*--- Update the geometry for flows on static FSI problems with moving meshes ---*/
 
@@ -13958,7 +13903,7 @@ void CEulerSolver::TurboAverageProcess(CSolver **solver, CGeometry *geometry, CC
 }
 
 void CEulerSolver::MixedOut_Average (CConfig *config, su2double val_init_pressure, su2double *val_Averaged_Flux, su2double *val_normal,
-    su2double& pressure_mix, su2double& density_mix) {
+                                     su2double& pressure_mix, su2double& density_mix) {
 
 
   su2double dx, f, df, resdl = 1.0E+05;
@@ -14228,9 +14173,9 @@ CNSSolver::CNSSolver(void) : CEulerSolver() {
   CoPx_Visc = NULL;   CoPy_Visc = NULL;   CoPz_Visc = NULL;
 
   ForceViscous = NULL; MomentViscous = NULL; CSkinFriction = NULL;
-    
+
   Buffet_Sensor = NULL; Buffet_Metric = NULL;
- 
+
   /*--- Surface based array initialization ---*/
   
   Surface_CL_Visc = NULL; Surface_CD_Visc = NULL; Surface_CSF_Visc = NULL; Surface_CEff_Visc = NULL;
@@ -14280,6 +14225,9 @@ CNSSolver::CNSSolver(CGeometry *geometry, CConfig *config, unsigned short iMesh)
   unsigned short direct_diff = config->GetDirectDiff();
   bool rans = ((config->GetKind_Solver() == RANS )|| (config->GetKind_Solver() == DISC_ADJ_RANS));
 
+  /*--- Store the multigrid level. ---*/
+  MGLevel = iMesh;
+
   /*--- Check for a restart file to evaluate if there is a change in the angle of attack
    before computing all the non-dimesional quantities. ---*/
 
@@ -14319,14 +14267,14 @@ CNSSolver::CNSSolver(CGeometry *geometry, CConfig *config, unsigned short iMesh)
   CFx_Visc = NULL;   CFy_Visc = NULL;   CFz_Visc = NULL;
   CMx_Visc = NULL;   CMy_Visc = NULL;   CMz_Visc = NULL;
   CoPx_Visc = NULL;   CoPy_Visc = NULL;   CoPz_Visc = NULL;
-    
+
   Buffet_Sensor = NULL; Buffet_Metric = NULL;
 
   Surface_CL_Visc = NULL; Surface_CD_Visc = NULL; Surface_CSF_Visc = NULL; Surface_CEff_Visc = NULL;
   Surface_CFx_Visc = NULL;   Surface_CFy_Visc = NULL;   Surface_CFz_Visc = NULL;
   Surface_CMx_Visc = NULL;   Surface_CMy_Visc = NULL;   Surface_CMz_Visc = NULL;
   Surface_HF_Visc = NULL; Surface_MaxHF_Visc = NULL;
-    
+
   Surface_Buffet_Metric = NULL;
   
   CMerit_Visc = NULL;      CT_Visc = NULL;      CQ_Visc = NULL;
@@ -14398,17 +14346,25 @@ CNSSolver::CNSSolver(CGeometry *geometry, CConfig *config, unsigned short iMesh)
   nMarker      = config->GetnMarker_All();
   nPoint       = geometry->GetnPoint();
   nPointDomain = geometry->GetnPointDomain();
- 
+
   /*--- Store the number of vertices on each marker for deallocation later ---*/
 
   nVertex = new unsigned long[nMarker];
   for (iMarker = 0; iMarker < nMarker; iMarker++)
     nVertex[iMarker] = geometry->nVertex[iMarker];
- 
+  
   /*--- Perform the non-dimensionalization for the flow equations using the
    specified reference values. ---*/
   
   SetNondimensionalization(config, iMesh);
+  
+  /*--- Check if we are executing a verification case. If so, the
+   VerificationSolution object will be instantiated for a particular
+   option from the available library of verification solutions. Note
+   that this is done after SetNondim(), as problem-specific initial
+   parameters are needed by the solution constructors. ---*/
+  
+  SetVerificationSolution(nDim, nVar, config);
   
   /*--- Allocate the node variables ---*/
   node = new CVariable*[nPoint];
@@ -14492,9 +14448,8 @@ CNSSolver::CNSSolver(CGeometry *geometry, CConfig *config, unsigned short iMesh)
 
     if (rank == MASTER_NODE) cout << "Initialize Jacobian structure (Navier-Stokes). MG level: " << iMesh <<"." << endl;
     Jacobian.Initialize(nPoint, nPointDomain, nVar, nVar, true, geometry, config);
-
-    if ((config->GetKind_Linear_Solver_Prec() == LINELET) ||
-        (config->GetKind_Linear_Solver() == SMOOTHER_LINELET)) {
+    
+    if (config->GetKind_Linear_Solver_Prec() == LINELET) {
       nLineLets = Jacobian.BuildLineletPreconditioner(geometry, config);
       if (rank == MASTER_NODE) cout << "Compute linelet structure. " << nLineLets << " elements in each line (average)." << endl;
     }
@@ -14684,16 +14639,16 @@ CNSSolver::CNSSolver(CGeometry *geometry, CConfig *config, unsigned short iMesh)
       }
     }
   }
-    
+
   /*--- Buffet sensor in all the markers ---*/
-    
+
   if(config->GetBuffet_Monitoring() || config->GetKind_ObjFunc() == BUFFET_SENSOR){
-        
+
     Buffet_Sensor          = new su2double*[nMarker];
     for(iMarker = 0; iMarker < nMarker; iMarker++) {
       Buffet_Sensor[iMarker] = new su2double[geometry->nVertex[iMarker]];
     }
-        
+
   }
   
   /*--- Non dimensional coefficients ---*/
@@ -14756,7 +14711,7 @@ CNSSolver::CNSSolver(CGeometry *geometry, CConfig *config, unsigned short iMesh)
   Surface_CMx_Inv        = new su2double[config->GetnMarker_Monitoring()];
   Surface_CMy_Inv        = new su2double[config->GetnMarker_Monitoring()];
   Surface_CMz_Inv        = new su2double[config->GetnMarker_Monitoring()];
- 
+
   Surface_CL_Mnt         = new su2double[config->GetnMarker_Monitoring()];
   Surface_CD_Mnt         = new su2double[config->GetnMarker_Monitoring()];
   Surface_CSF_Mnt        = new su2double[config->GetnMarker_Monitoring()];
@@ -14791,12 +14746,12 @@ CNSSolver::CNSSolver(CGeometry *geometry, CConfig *config, unsigned short iMesh)
   Surface_CMz_Visc        = new su2double[config->GetnMarker_Monitoring()];
   Surface_HF_Visc         = new su2double[config->GetnMarker_Monitoring()];
   Surface_MaxHF_Visc      = new su2double[config->GetnMarker_Monitoring()];
-    
+
   if(config->GetBuffet_Monitoring() || config->GetKind_ObjFunc() == BUFFET_SENSOR){
-      
-      Buffet_Metric          = new su2double[nMarker];
-      Surface_Buffet_Metric = new su2double[config->GetnMarker_Monitoring()];
-      
+
+    Buffet_Metric          = new su2double[nMarker];
+    Surface_Buffet_Metric = new su2double[config->GetnMarker_Monitoring()];
+
   }
 
   
@@ -14869,27 +14824,27 @@ CNSSolver::CNSSolver(CGeometry *geometry, CConfig *config, unsigned short iMesh)
   /*--- Initialize the secondary values for direct derivative approxiations ---*/
 
   switch(direct_diff) {
-    case NO_DERIVATIVE:
-      break;
-    case D_DENSITY:
-      SU2_TYPE::SetDerivative(Density_Inf, 1.0);
-      break;
-    case D_PRESSURE:
-      SU2_TYPE::SetDerivative(Pressure_Inf, 1.0);
-      break;
-    case D_TEMPERATURE:
-      SU2_TYPE::SetDerivative(Temperature_Inf, 1.0);
-      break;
-    case D_VISCOSITY:
-      SU2_TYPE::SetDerivative(Viscosity_Inf, 1.0);
-      break;
-    case D_MACH: case D_AOA:
-    case D_SIDESLIP: case D_REYNOLDS:
-    case D_TURB2LAM: case D_DESIGN:
-      /*--- Already done in postprocessing of config ---*/
-      break;
-    default:
-      break;
+  case NO_DERIVATIVE:
+    break;
+  case D_DENSITY:
+    SU2_TYPE::SetDerivative(Density_Inf, 1.0);
+    break;
+  case D_PRESSURE:
+    SU2_TYPE::SetDerivative(Pressure_Inf, 1.0);
+    break;
+  case D_TEMPERATURE:
+    SU2_TYPE::SetDerivative(Temperature_Inf, 1.0);
+    break;
+  case D_VISCOSITY:
+    SU2_TYPE::SetDerivative(Viscosity_Inf, 1.0);
+    break;
+  case D_MACH: case D_AOA:
+  case D_SIDESLIP: case D_REYNOLDS:
+  case D_TURB2LAM: case D_DESIGN:
+    /*--- Already done in postprocessing of config ---*/
+    break;
+  default:
+    break;
   }
 
   /*--- Initialize fan face pressure, fan face mach number, and mass flow rate ---*/
@@ -15087,7 +15042,7 @@ CNSSolver::~CNSSolver(void) {
     }
     delete [] HeatConjugateVar;
   }
-    
+
   if (Buffet_Sensor != NULL) {
     for (iMarker = 0; iMarker < nMarker; iMarker++){
       delete [] Buffet_Sensor[iMarker];
@@ -15101,27 +15056,26 @@ void CNSSolver::Preprocessing(CGeometry *geometry, CSolver **solver_container, C
 
   unsigned long iPoint, ErrorCounter = 0;
   su2double StrainMag = 0.0, Omega = 0.0, *Vorticity;
-    
+
   unsigned long ExtIter     = config->GetExtIter();
   bool cont_adjoint         = config->GetContinuous_Adjoint();
   bool disc_adjoint         = config->GetDiscrete_Adjoint();
   bool implicit             = (config->GetKind_TimeIntScheme_Flow() == EULER_IMPLICIT);
   bool center               = (config->GetKind_ConvNumScheme_Flow() == SPACE_CENTERED) || (cont_adjoint && config->GetKind_ConvNumScheme_AdjFlow() == SPACE_CENTERED);
   bool center_jst           = center && config->GetKind_Centered_Flow() == JST;
-  bool limiter_flow         = ((config->GetKind_SlopeLimit_Flow() != NO_LIMITER) && (ExtIter <= config->GetLimiterIter()) && !(disc_adjoint && config->GetFrozen_Limiter_Disc()));
-  bool limiter_turb         = ((config->GetKind_SlopeLimit_Turb() != NO_LIMITER) && (ExtIter <= config->GetLimiterIter()) && !(disc_adjoint && config->GetFrozen_Limiter_Disc()));
+  bool limiter_flow         = (config->GetKind_SlopeLimit_Flow() != NO_LIMITER) && (ExtIter <= config->GetLimiterIter());
+  bool limiter_turb         = (config->GetKind_SlopeLimit_Turb() != NO_LIMITER) && (ExtIter <= config->GetLimiterIter());
   bool limiter_adjflow      = (cont_adjoint && (config->GetKind_SlopeLimit_AdjFlow() != NO_LIMITER) && (ExtIter <= config->GetLimiterIter()));
   bool fixed_cl             = config->GetFixed_CL_Mode();
   bool engine               = ((config->GetnMarker_EngineInflow() != 0) || (config->GetnMarker_EngineExhaust() != 0));
   bool actuator_disk        = ((config->GetnMarker_ActDiskInlet() != 0) || (config->GetnMarker_ActDiskOutlet() != 0));
   bool nearfield            = (config->GetnMarker_NearFieldBound() != 0);
-  bool interface            = (config->GetnMarker_InterfaceBound() != 0);
   bool van_albada           = config->GetKind_SlopeLimit_Flow() == VAN_ALBADA_EDGE;
   unsigned short kind_row_dissipation = config->GetKind_RoeLowDiss();
   bool roe_low_dissipation  = (kind_row_dissipation != NO_ROELOWDISS) &&
-                              (config->GetKind_Upwind_Flow() == ROE ||
-                               config->GetKind_Upwind_Flow() == SLAU ||
-                               config->GetKind_Upwind_Flow() == SLAU2);
+      (config->GetKind_Upwind_Flow() == ROE ||
+       config->GetKind_Upwind_Flow() == SLAU ||
+       config->GetKind_Upwind_Flow() == SLAU2);
   bool wall_functions       = config->GetWall_Functions();
 
   /*--- Update the angle of attack at the far-field for fixed CL calculations (only direct problem). ---*/
@@ -15143,14 +15097,10 @@ void CNSSolver::Preprocessing(CGeometry *geometry, CSolver **solver_container, C
     SetActDisk_BCThrust(geometry, solver_container, config, iMesh, Output);
   }
 
-  /*--- Compute Interface MPI ---*/
-
-  if (interface) { Set_MPI_Interface(geometry, config); }
-
   /*--- Compute NearField MPI ---*/
 
   if (nearfield) { Set_MPI_Nearfield(geometry, config); }
- 
+
   /*--- Artificial dissipation ---*/
 
   if (center && !Output) {
@@ -15284,7 +15234,7 @@ unsigned long CNSSolver::SetPrimitive_Variables(CSolver **solver_container, CCon
 void CNSSolver::SetTime_Step(CGeometry *geometry, CSolver **solver_container, CConfig *config, unsigned short iMesh, unsigned long Iteration) {
 
   su2double *Normal, Area, Vol, Mean_SoundSpeed = 0.0, Mean_ProjVel = 0.0, Lambda, Local_Delta_Time, Local_Delta_Time_Visc,
-  Global_Delta_Time = 1E6, Mean_LaminarVisc = 0.0, Mean_EddyVisc = 0.0, Mean_Density = 0.0, Lambda_1, Lambda_2, K_v = 0.25, Global_Delta_UnstTimeND;
+      Global_Delta_Time = 1E6, Mean_LaminarVisc = 0.0, Mean_EddyVisc = 0.0, Mean_Density = 0.0, Lambda_1, Lambda_2, K_v = 0.25, Global_Delta_UnstTimeND;
   unsigned long iEdge, iVertex, iPoint = 0, jPoint = 0;
   unsigned short iDim, iMarker;
   su2double ProjVel, ProjVel_i, ProjVel_j;
@@ -15361,20 +15311,20 @@ void CNSSolver::SetTime_Step(CGeometry *geometry, CSolver **solver_container, CC
     if ((config->GetMarker_All_KindBC(iMarker) != INTERNAL_BOUNDARY) &&
         (config->GetMarker_All_KindBC(iMarker) != PERIODIC_BOUNDARY)) {
     for (iVertex = 0; iVertex < geometry->GetnVertex(iMarker); iVertex++) {
-
+      
       /*--- Point identification, Normal vector and area ---*/
-
+      
       iPoint = geometry->vertex[iMarker][iVertex]->GetNode();
       Normal = geometry->vertex[iMarker][iVertex]->GetNormal();
       Area = 0.0; for (iDim = 0; iDim < nDim; iDim++) Area += Normal[iDim]*Normal[iDim]; Area = sqrt(Area);
-
+      
       /*--- Mean Values ---*/
-
+      
       Mean_ProjVel = node[iPoint]->GetProjVel(Normal);
       Mean_SoundSpeed = node[iPoint]->GetSoundSpeed() * Area;
-
+      
       /*--- Adjustment for grid movement ---*/
-
+      
       if (grid_movement) {
         su2double *GridVel = geometry->node[iPoint]->GetGridVel();
         ProjVel = 0.0;
@@ -15382,26 +15332,26 @@ void CNSSolver::SetTime_Step(CGeometry *geometry, CSolver **solver_container, CC
           ProjVel += GridVel[iDim]*Normal[iDim];
         Mean_ProjVel -= ProjVel;
       }
-
+      
       /*--- Inviscid contribution ---*/
-
+      
       Lambda = fabs(Mean_ProjVel) + Mean_SoundSpeed;
       if (geometry->node[iPoint]->GetDomain()) {
         node[iPoint]->AddMax_Lambda_Inv(Lambda);
       }
-
+      
       /*--- Viscous contribution ---*/
-
+      
       Mean_LaminarVisc = node[iPoint]->GetLaminarViscosity();
       Mean_EddyVisc    = node[iPoint]->GetEddyViscosity();
       Mean_Density     = node[iPoint]->GetSolution(0);
-
+      
       Lambda_1 = (4.0/3.0)*(Mean_LaminarVisc + Mean_EddyVisc);
       Lambda_2 = (1.0 + (Prandtl_Lam/Prandtl_Turb)*(Mean_EddyVisc/Mean_LaminarVisc))*(Gamma*Mean_LaminarVisc/Prandtl_Lam);
       Lambda = (Lambda_1 + Lambda_2)*Area*Area/Mean_Density;
-
+      
       if (geometry->node[iPoint]->GetDomain()) node[iPoint]->AddMax_Lambda_Visc(Lambda);
-
+      
     }
     }
   }
@@ -15546,12 +15496,12 @@ void CNSSolver::Friction_Forces(CGeometry *geometry, CConfig *config) {
   unsigned long iVertex, iPoint, iPointNormal;
   unsigned short Boundary, Monitoring, iMarker, iMarker_Monitoring, iDim, jDim;
   su2double Viscosity = 0.0, div_vel, *Normal, MomentDist[3] = {0.0, 0.0, 0.0}, WallDist[3] = {0.0, 0.0, 0.0},
-  *Coord, *Coord_Normal, Area, WallShearStress, TauNormal, factor, RefTemp, RefVel2,
-  RefDensity, GradTemperature, Density = 0.0, WallDistMod, FrictionVel,
-  Mach2Vel, Mach_Motion, UnitNormal[3] = {0.0, 0.0, 0.0}, TauElem[3] = {0.0, 0.0, 0.0}, TauTangent[3] = {0.0, 0.0, 0.0},
-  Tau[3][3] = {{0.0, 0.0, 0.0},{0.0, 0.0, 0.0},{0.0, 0.0, 0.0}}, Force[3] = {0.0, 0.0, 0.0}, Cp, thermal_conductivity, MaxNorm = 8.0,
-  Grad_Vel[3][3] = {{0.0, 0.0, 0.0},{0.0, 0.0, 0.0},{0.0, 0.0, 0.0}}, Grad_Temp[3] = {0.0, 0.0, 0.0},
-  delta[3][3] = {{1.0, 0.0, 0.0},{0.0,1.0,0.0},{0.0,0.0,1.0}};
+      *Coord, *Coord_Normal, Area, WallShearStress, TauNormal, factor, RefTemp, RefVel2,
+      RefDensity, GradTemperature, Density = 0.0, WallDistMod, FrictionVel,
+      Mach2Vel, Mach_Motion, UnitNormal[3] = {0.0, 0.0, 0.0}, TauElem[3] = {0.0, 0.0, 0.0}, TauTangent[3] = {0.0, 0.0, 0.0},
+      Tau[3][3] = {{0.0, 0.0, 0.0},{0.0, 0.0, 0.0},{0.0, 0.0, 0.0}}, Force[3] = {0.0, 0.0, 0.0}, Cp, thermal_conductivity, MaxNorm = 8.0,
+      Grad_Vel[3][3] = {{0.0, 0.0, 0.0},{0.0, 0.0, 0.0},{0.0, 0.0, 0.0}}, Grad_Temp[3] = {0.0, 0.0, 0.0},
+      delta[3][3] = {{1.0, 0.0, 0.0},{0.0,1.0,0.0},{0.0,0.0,1.0}};
   su2double MomentX_Force[3] = {0.0,0.0,0.0}, MomentY_Force[3] = {0.0,0.0,0.0}, MomentZ_Force[3] = {0.0,0.0,0.0};
   su2double AxiFactor;
 
@@ -15690,28 +15640,28 @@ void CNSSolver::Friction_Forces(CGeometry *geometry, CConfig *config) {
         /*--- If necessary evaluate the QCR contribution to Tau ---*/
 
         if (QCR){
-            su2double den_aux, c_cr1=0.3, O_ik, O_jk;
-            unsigned short kDim;
+          su2double den_aux, c_cr1=0.3, O_ik, O_jk;
+          unsigned short kDim;
 
-            /*--- Denominator Antisymmetric normalized rotation tensor ---*/
+          /*--- Denominator Antisymmetric normalized rotation tensor ---*/
 
-            den_aux = 0.0;
-            for (iDim = 0 ; iDim < nDim; iDim++)
-                for (jDim = 0 ; jDim < nDim; jDim++)
-                    den_aux += Grad_Vel[iDim][jDim] * Grad_Vel[iDim][jDim];
-            den_aux = sqrt(max(den_aux,1E-10));
+          den_aux = 0.0;
+          for (iDim = 0 ; iDim < nDim; iDim++)
+            for (jDim = 0 ; jDim < nDim; jDim++)
+              den_aux += Grad_Vel[iDim][jDim] * Grad_Vel[iDim][jDim];
+          den_aux = sqrt(max(den_aux,1E-10));
 
-            /*--- Adding the QCR contribution ---*/
+          /*--- Adding the QCR contribution ---*/
 
-            for (iDim = 0 ; iDim < nDim; iDim++){
-                for (jDim = 0 ; jDim < nDim; jDim++){
-                    for (kDim = 0 ; kDim < nDim; kDim++){
-                        O_ik = (Grad_Vel[iDim][kDim] - Grad_Vel[kDim][iDim])/ den_aux;
-                        O_jk = (Grad_Vel[jDim][kDim] - Grad_Vel[kDim][jDim])/ den_aux;
-                        Tau[iDim][jDim] -= c_cr1 * (O_ik * Tau[jDim][kDim] + O_jk * Tau[iDim][kDim]);
-                    }
-                }
+          for (iDim = 0 ; iDim < nDim; iDim++){
+            for (jDim = 0 ; jDim < nDim; jDim++){
+              for (kDim = 0 ; kDim < nDim; kDim++){
+                O_ik = (Grad_Vel[iDim][kDim] - Grad_Vel[kDim][iDim])/ den_aux;
+                O_jk = (Grad_Vel[jDim][kDim] - Grad_Vel[kDim][jDim])/ den_aux;
+                Tau[iDim][jDim] -= c_cr1 * (O_ik * Tau[jDim][kDim] + O_jk * Tau[iDim][kDim]);
+              }
             }
+          }
 
         }
 
@@ -16031,43 +15981,43 @@ void CNSSolver::Friction_Forces(CGeometry *geometry, CConfig *config) {
 }
 
 void CNSSolver::Buffet_Monitoring(CGeometry *geometry, CConfig *config) {
-    
+
   unsigned long iVertex;
   unsigned short Boundary, Monitoring, iMarker, iMarker_Monitoring, iDim;
   su2double *Vel_FS = config->GetVelocity_FreeStream();
   su2double VelMag_FS = 0.0, SkinFrictionMag = 0.0, SkinFrictionDot = 0.0, *Normal, Area, Sref = config->GetRefArea();
   su2double k   = config->GetBuffet_k(),
-             lam = config->GetBuffet_lambda();
+      lam = config->GetBuffet_lambda();
   string Marker_Tag, Monitoring_Tag;
-    
+
   for (iDim = 0; iDim < nDim; iDim++){
     VelMag_FS += Vel_FS[iDim]*Vel_FS[iDim];
   }
   VelMag_FS = sqrt(VelMag_FS);
-    
+
   /*-- Variables initialization ---*/
 
   Total_Buffet_Metric = 0.0;
-    
+
   for (iMarker_Monitoring = 0; iMarker_Monitoring < config->GetnMarker_Monitoring(); iMarker_Monitoring++) {
     Surface_Buffet_Metric[iMarker_Monitoring] = 0.0;
   }
-    
+
   /*--- Loop over the Euler and Navier-Stokes markers ---*/
-    
+
   for (iMarker = 0; iMarker < nMarker; iMarker++) {
-      
+
     Buffet_Metric[iMarker] = 0.0;
-        
+
     Boundary   = config->GetMarker_All_KindBC(iMarker);
     Monitoring = config->GetMarker_All_Monitoring(iMarker);
-        
+
     if ((Boundary == HEAT_FLUX) || (Boundary == ISOTHERMAL) || (Boundary == HEAT_FLUX) || (Boundary == CHT_WALL_INTERFACE)) {
-            
+
       /*--- Loop over the vertices to compute the buffet sensor ---*/
-            
+
       for (iVertex = 0; iVertex < geometry->nVertex[iMarker]; iVertex++) {
-                
+
         /*--- Perform dot product of skin friction with freestream velocity ---*/
 
         SkinFrictionMag = 0.0;
@@ -16077,30 +16027,30 @@ void CNSSolver::Buffet_Monitoring(CGeometry *geometry, CConfig *config) {
           SkinFrictionDot += CSkinFriction[iMarker][iDim][iVertex]*Vel_FS[iDim];
         }
         SkinFrictionMag = sqrt(SkinFrictionMag);
-          
+
         /*--- Normalize the dot product ---*/
-          
+
         SkinFrictionDot /= SkinFrictionMag*VelMag_FS;
-          
+
         /*--- Compute Heaviside function ---*/
-          
+
         Buffet_Sensor[iMarker][iVertex] = 1./(1. + exp(2.*k*(SkinFrictionDot + lam)));
-          
+
         /*--- Integrate buffet sensor ---*/
-          
+
         if(Monitoring == YES){
-            
+
           Normal = geometry->vertex[iMarker][iVertex]->GetNormal();
           Area = 0.0;
           for(iDim = 0; iDim < nDim; iDim++) Area += Normal[iDim]*Normal[iDim];
           Area = sqrt(Area);
-            
+
           Buffet_Metric[iMarker] += Buffet_Sensor[iMarker][iVertex]*Area/Sref;
-        
+
         }
-          
+
       }
-        
+
       if(Monitoring == YES){
         
         Total_Buffet_Metric += Buffet_Metric[iMarker];
@@ -16112,39 +16062,39 @@ void CNSSolver::Buffet_Monitoring(CGeometry *geometry, CConfig *config) {
           Marker_Tag = config->GetMarker_All_TagBound(iMarker);
           if (Marker_Tag == Monitoring_Tag) Surface_Buffet_Metric[iMarker_Monitoring] = Buffet_Metric[iMarker];
         }
-            
+
       }
-            
+
     }
-      
+
   }
-    
+
 #ifdef HAVE_MPI
-    
+
   /*--- Add buffet metric information using all the nodes ---*/
-    
+
   su2double MyTotal_Buffet_Metric = Total_Buffet_Metric;
   Total_Buffet_Metric = 0.0;
-    
+
   SU2_MPI::Allreduce(&MyTotal_Buffet_Metric, &Total_Buffet_Metric, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    
+
   /*--- Add the buffet metric on the surfaces using all the nodes ---*/
 
   su2double *MySurface_Buffet_Metric = new su2double[config->GetnMarker_Monitoring()];
-    
+
   for (iMarker_Monitoring = 0; iMarker_Monitoring < config->GetnMarker_Monitoring(); iMarker_Monitoring++) {
-      
+
     MySurface_Buffet_Metric[iMarker_Monitoring] = Surface_Buffet_Metric[iMarker_Monitoring];
     Surface_Buffet_Metric[iMarker_Monitoring] = 0.0;
-      
+
   }
-    
+
   SU2_MPI::Allreduce(MySurface_Buffet_Metric, Surface_Buffet_Metric, config->GetnMarker_Monitoring(), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
   
   delete [] MySurface_Buffet_Metric;
-    
+
 #endif
-        
+
 }
 
 void CNSSolver::Evaluate_ObjFunc(CConfig *config) {
@@ -16184,7 +16134,7 @@ void CNSSolver::BC_HeatFlux_Wall(CGeometry *geometry, CSolver **solver_container
   su2double ProjGridVel, *GridVel, GridVel2, *Normal, Area, Pressure = 0.0;
   su2double total_viscosity, div_vel, Density, tau_vel[3] = {0.0, 0.0, 0.0}, UnitNormal[3] = {0.0, 0.0, 0.0};
   su2double laminar_viscosity = 0.0, eddy_viscosity = 0.0, Grad_Vel[3][3] = {{0.0,0.0,0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}},
-  tau[3][3] = {{0.0,0.0,0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}};
+      tau[3][3] = {{0.0,0.0,0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}};
   su2double delta[3][3] = {{1.0, 0.0, 0.0},{0.0,1.0,0.0},{0.0,0.0,1.0}};
   
   bool implicit       = (config->GetKind_TimeIntScheme_Flow() == EULER_IMPLICIT);
@@ -16197,12 +16147,12 @@ void CNSSolver::BC_HeatFlux_Wall(CGeometry *geometry, CSolver **solver_container
   /*--- Get the specified wall heat flux from config as well as the
         wall function treatment.---*/
   
-  Wall_HeatFlux = config->GetWall_HeatFlux(Marker_Tag);
+  Wall_HeatFlux = config->GetWall_HeatFlux(Marker_Tag)/config->GetHeat_Flux_Ref();
 
-//  Wall_Function = config->GetWallFunction_Treatment(Marker_Tag);
-//  if (Wall_Function != NO_WALL_FUNCTION) {
-//    SU2_MPI::Error("Wall function treament not implemented yet", CURRENT_FUNCTION);
-//  }
+  //  Wall_Function = config->GetWallFunction_Treatment(Marker_Tag);
+  //  if (Wall_Function != NO_WALL_FUNCTION) {
+  //    SU2_MPI::Error("Wall function treament not implemented yet", CURRENT_FUNCTION);
+  //  }
   
   /*--- Loop over all of the vertices on this boundary marker ---*/
   
@@ -16431,7 +16381,7 @@ void CNSSolver::BC_Isothermal_Wall(CGeometry *geometry, CSolver **solver_contain
   su2double ProjGridVel, *GridVel, GridVel2, Pressure = 0.0, Density, Vel2;
   su2double total_viscosity, div_vel, tau_vel[3] = {0.0,0.0,0.0}, UnitNormal[3] = {0.0,0.0,0.0};
   su2double laminar_viscosity, eddy_viscosity, Grad_Vel[3][3] = {{1.0, 0.0, 0.0},{0.0,1.0,0.0},{0.0,0.0,1.0}},
-  tau[3][3] = {{0.0, 0.0, 0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}}, delta[3][3] = {{1.0, 0.0, 0.0},{0.0,1.0,0.0},{0.0,0.0,1.0}};
+      tau[3][3] = {{0.0, 0.0, 0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}}, delta[3][3] = {{1.0, 0.0, 0.0},{0.0,1.0,0.0},{0.0,0.0,1.0}};
 
   su2double Prandtl_Lam  = config->GetPrandtl_Lam();
   su2double Prandtl_Turb = config->GetPrandtl_Turb();
@@ -16450,10 +16400,10 @@ void CNSSolver::BC_Isothermal_Wall(CGeometry *geometry, CSolver **solver_contain
 
   Twall = config->GetIsothermal_Temperature(Marker_Tag)/config->GetTemperature_Ref();
 
-//  Wall_Function = config->GetWallFunction_Treatment(Marker_Tag);
-//  if (Wall_Function != NO_WALL_FUNCTION) {
-//    SU2_MPI::Error("Wall function treament not implemented yet", CURRENT_FUNCTION);
-//  }
+  //  Wall_Function = config->GetWallFunction_Treatment(Marker_Tag);
+  //  if (Wall_Function != NO_WALL_FUNCTION) {
+  //    SU2_MPI::Error("Wall function treament not implemented yet", CURRENT_FUNCTION);
+  //  }
 
   /*--- Loop over boundary points ---*/
 
@@ -16728,9 +16678,9 @@ void CNSSolver::SetRoe_Dissipation(CGeometry *geometry, CConfig *config){
   for (iPoint = 0; iPoint < nPoint; iPoint++){
 
     if (kind_roe_dissipation == FD || kind_roe_dissipation == FD_DUCROS){
-    
+
       wall_distance = geometry->node[iPoint]->GetWall_Distance();
-    
+
       node[iPoint]->SetRoe_Dissipation_FD(wall_distance);
 
     } else if (kind_roe_dissipation == NTS || kind_roe_dissipation == NTS_DUCROS) {
@@ -16753,7 +16703,7 @@ void CNSSolver::BC_ConjugateHeat_Interface(CGeometry *geometry, CSolver **solver
   su2double ProjGridVel, *GridVel, GridVel2, Pressure = 0.0, Density, Vel2;
   su2double total_viscosity, div_vel, tau_vel[3] = {0.0,0.0,0.0}, UnitNormal[3] = {0.0,0.0,0.0};
   su2double laminar_viscosity, eddy_viscosity, Grad_Vel[3][3] = {{1.0, 0.0, 0.0},{0.0,1.0,0.0},{0.0,0.0,1.0}},
-  tau[3][3] = {{0.0, 0.0, 0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}}, delta[3][3] = {{1.0, 0.0, 0.0},{0.0,1.0,0.0},{0.0,0.0,1.0}};
+      tau[3][3] = {{0.0, 0.0, 0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}}, delta[3][3] = {{1.0, 0.0, 0.0},{0.0,1.0,0.0},{0.0,0.0,1.0}};
 
   su2double Prandtl_Lam  = config->GetPrandtl_Lam();
   su2double Prandtl_Turb = config->GetPrandtl_Turb();
@@ -16767,12 +16717,12 @@ void CNSSolver::BC_ConjugateHeat_Interface(CGeometry *geometry, CSolver **solver
 
   string Marker_Tag = config->GetMarker_All_TagBound(val_marker);
 
-//  /*--- Retrieve the specified wall function treatment.---*/
-//
-//  Wall_Function = config->GetWallFunction_Treatment(Marker_Tag);
-//  if (Wall_Function != NO_WALL_FUNCTION) {
-//      SU2_MPI::Error("Wall function treament not implemented yet", CURRENT_FUNCTION);
-//  }
+  //  /*--- Retrieve the specified wall function treatment.---*/
+  //
+  //  Wall_Function = config->GetWallFunction_Treatment(Marker_Tag);
+  //  if (Wall_Function != NO_WALL_FUNCTION) {
+  //      SU2_MPI::Error("Wall function treament not implemented yet", CURRENT_FUNCTION);
+  //  }
 
   /*--- Loop over boundary points ---*/
 
@@ -17184,8 +17134,8 @@ void CNSSolver::SetTauWall_WF(CGeometry *geometry, CSolver **solver_container, C
             for (jDim = 0 ; jDim < nDim; jDim++) {
               Delta = 0.0; if (iDim == jDim) Delta = 1.0;
               tau[iDim][jDim] = Lam_Visc_Wall*(  grad_primvar[jDim+1][iDim]
-                                               + grad_primvar[iDim+1][jDim]) -
-              TWO3*Lam_Visc_Wall*div_vel*Delta;
+                  + grad_primvar[iDim+1][jDim]) -
+                  TWO3*Lam_Visc_Wall*div_vel*Delta;
             }
             TauElem[iDim] = 0.0;
             for (jDim = 0; jDim < nDim; jDim++)

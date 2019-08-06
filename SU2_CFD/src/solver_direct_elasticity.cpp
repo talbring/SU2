@@ -36,6 +36,8 @@
  */
 
 #include "../include/solver_structure.hpp"
+#include "../include/variables/CFEABoundVariable.hpp"
+#include "../include/variables/CFEAVariable.hpp"
 #include <algorithm>
 
 CFEASolver::CFEASolver(void) : CSolver() {
@@ -65,7 +67,6 @@ CFEASolver::CFEASolver(void) : CSolver() {
   
   Jacobian_c_ij = NULL;
   Jacobian_s_ij = NULL;
-  Jacobian_k_ij = NULL;
   
   MassMatrix_ij = NULL;
   
@@ -108,7 +109,6 @@ CFEASolver::CFEASolver(CGeometry *geometry, CConfig *config) : CSolver() {
   bool de_effects = config->GetDE_Effects();                      // Test whether we consider dielectric elastomers
   
   bool body_forces = config->GetDeadLoad();  // Body forces (dead loads).
-  bool incompressible = (config->GetMaterialCompressibility() == INCOMPRESSIBLE_MAT);
   
   element_based = false;          // A priori we don't have an element-based input file (most of the applications will be like this)
   
@@ -122,7 +122,6 @@ CFEASolver::CFEASolver(CGeometry *geometry, CConfig *config) : CSolver() {
   /*--- Number of different terms for FEA ---*/
   nFEA_Terms = 1;
   if (de_effects) nFEA_Terms++;       // The DE term is DE_TERM = 1
-  if (incompressible) nFEA_Terms = 3; // The incompressible term is INC_TERM = 2
   
   /*--- Here is where we assign the kind of each element ---*/
   
@@ -138,41 +137,34 @@ CFEASolver::CFEASolver(CGeometry *geometry, CConfig *config) : CSolver() {
   }
   
   if (nDim == 2) {
-    
-      /*--- Basic terms ---*/
-      element_container[FEA_TERM][EL_TRIA] = new CTRIA1(nDim, config);
-      element_container[FEA_TERM][EL_QUAD] = new CQUAD4(nDim, config);
-    
-      if (de_effects){
-        element_container[DE_TERM][EL_TRIA] = new CTRIA1(nDim, config);
-        element_container[DE_TERM][EL_QUAD] = new CQUAD4(nDim, config);
-      }
 
-      if (incompressible){
-        element_container[INC_TERM][EL_TRIA] = new CTRIA1(nDim, config);
-        element_container[INC_TERM][EL_QUAD] = new CQUAD1(nDim, config);
-      }
+    /*--- Basic terms ---*/
+    element_container[FEA_TERM][EL_TRIA] = new CTRIA1(nDim, config);
+    element_container[FEA_TERM][EL_QUAD] = new CQUAD4(nDim, config);
+
+    if (de_effects){
+      element_container[DE_TERM][EL_TRIA] = new CTRIA1(nDim, config);
+      element_container[DE_TERM][EL_QUAD] = new CQUAD4(nDim, config);
+    }
 
   }
   else if (nDim == 3) {
 
-      element_container[FEA_TERM][EL_TETRA] = new CTETRA1(nDim, config);
-      element_container[FEA_TERM][EL_HEXA] = new CHEXA8(nDim, config);
+    element_container[FEA_TERM][EL_TETRA] = new CTETRA1(nDim, config);
+    element_container[FEA_TERM][EL_HEXA]  = new CHEXA8 (nDim, config);
+    element_container[FEA_TERM][EL_PYRAM] = new CPYRAM5(nDim, config);
+    element_container[FEA_TERM][EL_PRISM] = new CPRISM6(nDim, config);
 
-      if (de_effects){
-        element_container[DE_TERM][EL_TETRA] = new CTETRA1(nDim, config);
-        element_container[DE_TERM][EL_HEXA] = new CHEXA8(nDim, config);
-      }
-
-      if (incompressible) {
-        element_container[INC_TERM][EL_TETRA] = new CTETRA1(nDim, config);
-        element_container[INC_TERM][EL_HEXA] = new CHEXA1(nDim, config);
-      }
-
+    if (de_effects){
+      element_container[DE_TERM][EL_TETRA] = new CTETRA1(nDim, config);
+      element_container[DE_TERM][EL_HEXA]  = new CHEXA8 (nDim, config);
+      element_container[DE_TERM][EL_PYRAM] = new CPYRAM5(nDim, config);
+      element_container[DE_TERM][EL_PRISM] = new CPRISM6(nDim, config);
+    }
 
   }
   
-  node              = new CVariable*[nPoint];
+  node = new CVariable*[nPoint];
   
   /*--- Set element properties ---*/
   elProperties = new unsigned long[4];
@@ -183,7 +175,7 @@ CFEASolver::CFEASolver(CGeometry *geometry, CConfig *config) : CSolver() {
   GradN_X = new su2double [nDim];
   GradN_x = new su2double [nDim];
   
-  Total_CFEA      = 0.0;
+  Total_CFEA        = 0.0;
   WAitken_Dyn       = 0.0;
   WAitken_Dyn_tn1   = 0.0;
   loadIncrement     = 0.0;
@@ -301,18 +293,6 @@ CFEASolver::CFEASolver(CGeometry *geometry, CConfig *config) : CSolver() {
       }
     }
     
-  }
-  
-  /*--- Term ij of the Jacobian (incompressibility term) ---*/
-  Jacobian_k_ij = NULL;
-  if (incompressible) {
-    Jacobian_k_ij = new su2double*[nVar];
-    for (iVar = 0; iVar < nVar; iVar++) {
-      Jacobian_k_ij[iVar] = new su2double [nVar];
-      for (jVar = 0; jVar < nVar; jVar++) {
-        Jacobian_k_ij[iVar][jVar] = 0.0;
-      }
-    }
   }
   
   /*--- Stress contribution to the node i ---*/
@@ -502,7 +482,6 @@ CFEASolver::~CFEASolver(void) {
   for (iVar = 0; iVar < nVar; iVar++) {
     if (Jacobian_s_ij != NULL) delete [] Jacobian_s_ij[iVar];
     if (Jacobian_c_ij != NULL) delete [] Jacobian_c_ij[iVar];
-    if (Jacobian_k_ij != NULL) delete[] Jacobian_k_ij[iVar];
     delete [] mZeros_Aux[iVar];
     delete [] mId_Aux[iVar];
     delete [] stressTensor[iVar];
@@ -510,7 +489,6 @@ CFEASolver::~CFEASolver(void) {
   
   if (Jacobian_s_ij != NULL) delete [] Jacobian_s_ij;
   if (Jacobian_c_ij != NULL) delete [] Jacobian_c_ij;
-  if (Jacobian_k_ij != NULL) delete [] Jacobian_k_ij;
   delete [] Res_Stress_i;
   delete [] Res_Ext_Surf;
   if (Res_Time_Cont != NULL) delete[] Res_Time_Cont;
@@ -1163,8 +1141,8 @@ void CFEASolver::Compute_StiffMatrix(CGeometry *geometry, CSolver **solver_conta
     if (geometry->elem[iElem]->GetVTK_Type() == TRIANGLE)      {nNodes = 3; EL_KIND = EL_TRIA;}
     if (geometry->elem[iElem]->GetVTK_Type() == QUADRILATERAL) {nNodes = 4; EL_KIND = EL_QUAD;}
     if (geometry->elem[iElem]->GetVTK_Type() == TETRAHEDRON)   {nNodes = 4; EL_KIND = EL_TETRA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == PYRAMID)       {nNodes = 5; EL_KIND = EL_TRIA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == PRISM)         {nNodes = 6; EL_KIND = EL_TRIA;}
+    if (geometry->elem[iElem]->GetVTK_Type() == PYRAMID)       {nNodes = 5; EL_KIND = EL_PYRAM;}
+    if (geometry->elem[iElem]->GetVTK_Type() == PRISM)         {nNodes = 6; EL_KIND = EL_PRISM;}
     if (geometry->elem[iElem]->GetVTK_Type() == HEXAHEDRON)    {nNodes = 8; EL_KIND = EL_HEXA;}
     
     /*--- For the number of nodes, we get the coordinates from the connectivity matrix ---*/
@@ -1239,7 +1217,6 @@ void CFEASolver::Compute_StiffMatrix_NodalStressRes(CGeometry *geometry, CSolver
   
   su2double Ks_ab;
   su2double *Kab = NULL;
-  su2double *Kk_ab = NULL;
   su2double *Ta = NULL;
   
   su2double *Ta_DE = NULL;
@@ -1247,7 +1224,6 @@ void CFEASolver::Compute_StiffMatrix_NodalStressRes(CGeometry *geometry, CSolver
   
   unsigned short NelNodes, jNode;
   
-  bool incompressible = (config->GetMaterialCompressibility() == INCOMPRESSIBLE_MAT);
   bool de_effects = config->GetDE_Effects();
 
   bool topology_mode = config->GetTopology_Optimization();
@@ -1261,8 +1237,8 @@ void CFEASolver::Compute_StiffMatrix_NodalStressRes(CGeometry *geometry, CSolver
     if (geometry->elem[iElem]->GetVTK_Type() == TRIANGLE)      {nNodes = 3; EL_KIND = EL_TRIA;}
     if (geometry->elem[iElem]->GetVTK_Type() == QUADRILATERAL) {nNodes = 4; EL_KIND = EL_QUAD;}
     if (geometry->elem[iElem]->GetVTK_Type() == TETRAHEDRON)   {nNodes = 4; EL_KIND = EL_TETRA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == PYRAMID)       {nNodes = 5; EL_KIND = EL_TRIA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == PRISM)         {nNodes = 6; EL_KIND = EL_TRIA;}
+    if (geometry->elem[iElem]->GetVTK_Type() == PYRAMID)       {nNodes = 5; EL_KIND = EL_PYRAM;}
+    if (geometry->elem[iElem]->GetVTK_Type() == PRISM)         {nNodes = 6; EL_KIND = EL_PRISM;}
     if (geometry->elem[iElem]->GetVTK_Type() == HEXAHEDRON)    {nNodes = 8; EL_KIND = EL_HEXA;}
     
     /*--- For the number of nodes, we get the coordinates from the connectivity matrix ---*/
@@ -1276,19 +1252,16 @@ void CFEASolver::Compute_StiffMatrix_NodalStressRes(CGeometry *geometry, CSolver
         /*--- Set current coordinate ---*/
         element_container[FEA_TERM][EL_KIND]->SetCurr_Coord(val_Sol, iNode, iDim);
         if (de_effects) element_container[DE_TERM][EL_KIND]->SetCurr_Coord(val_Sol, iNode, iDim);
-        if (incompressible) element_container[INC_TERM][EL_KIND]->SetCurr_Coord(val_Sol, iNode, iDim);
 
         /*--- Set reference coordinate ---*/
         if (prestretch_fem) {
           val_Ref = node[indexNode[iNode]]->GetPrestretch(iDim);
           element_container[FEA_TERM][EL_KIND]->SetRef_Coord(val_Ref, iNode, iDim);
           if (de_effects) element_container[DE_TERM][EL_KIND]->SetRef_Coord(val_Ref, iNode, iDim);
-          if (incompressible) element_container[INC_TERM][EL_KIND]->SetRef_Coord(val_Ref, iNode, iDim);
         }
         else {
           element_container[FEA_TERM][EL_KIND]->SetRef_Coord(val_Coord, iNode, iDim);
           if (de_effects) element_container[DE_TERM][EL_KIND]->SetRef_Coord(val_Coord, iNode, iDim);
-          if (incompressible) element_container[INC_TERM][EL_KIND]->SetRef_Coord(val_Coord, iNode, iDim);
         }
       }
     }
@@ -1302,10 +1275,6 @@ void CFEASolver::Compute_StiffMatrix_NodalStressRes(CGeometry *geometry, CSolver
     /*--- Set the properties of the element ---*/
     element_container[FEA_TERM][EL_KIND]->Set_ElProperties(element_properties[iElem]);
     if (de_effects) element_container[DE_TERM][EL_KIND]->Set_ElProperties(element_properties[iElem]);
-    if (incompressible) element_container[INC_TERM][EL_KIND]->Set_ElProperties(element_properties[iElem]);
-    
-    /*--- If incompressible, we compute the Mean Dilatation term first so the volume is already computed ---*/
-    if (incompressible) numerics[FEA_TERM]->Compute_MeanDilatation_Term(element_container[INC_TERM][EL_KIND], config);
     
     /*--- Compute the components of the Jacobian and the stress term for the material ---*/
     if (element_based){
@@ -1341,19 +1310,16 @@ void CFEASolver::Compute_StiffMatrix_NodalStressRes(CGeometry *geometry, CSolver
         /*--- Retrieve the values of the FEA term ---*/
         Kab = element_container[FEA_TERM][EL_KIND]->Get_Kab(iNode, jNode);
         Ks_ab = element_container[FEA_TERM][EL_KIND]->Get_Ks_ab(iNode,jNode);
-        if (incompressible) Kk_ab = element_container[INC_TERM][EL_KIND]->Get_Kk_ab(iNode,jNode);
         
         for (iVar = 0; iVar < nVar; iVar++) {
           Jacobian_s_ij[iVar][iVar] = simp_penalty*Ks_ab;
           for (jVar = 0; jVar < nVar; jVar++) {
             Jacobian_c_ij[iVar][jVar] = simp_penalty*Kab[iVar*nVar+jVar];
-            if (incompressible) Jacobian_k_ij[iVar][jVar] = simp_penalty*Kk_ab[iVar*nVar+jVar];
           }
         }
         
         Jacobian.AddBlock(indexNode[iNode], indexNode[jNode], Jacobian_c_ij);
         Jacobian.AddBlock(indexNode[iNode], indexNode[jNode], Jacobian_s_ij);
-        if (incompressible) Jacobian.AddBlock(indexNode[iNode], indexNode[jNode], Jacobian_k_ij);
         
         /*--- Retrieve the electric contribution to the Jacobian ---*/
         if (de_effects){
@@ -1394,11 +1360,10 @@ void CFEASolver::Compute_MassMatrix(CGeometry *geometry, CSolver **solver_contai
   for (iElem = 0; iElem < geometry->GetnElem(); iElem++) {
     
     if (geometry->elem[iElem]->GetVTK_Type() == TRIANGLE)     {nNodes = 3; EL_KIND = EL_TRIA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == QUADRILATERAL)    {nNodes = 4; EL_KIND = EL_QUAD;}
-    
+    if (geometry->elem[iElem]->GetVTK_Type() == QUADRILATERAL){nNodes = 4; EL_KIND = EL_QUAD;}
     if (geometry->elem[iElem]->GetVTK_Type() == TETRAHEDRON)  {nNodes = 4; EL_KIND = EL_TETRA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == PYRAMID)      {nNodes = 5; EL_KIND = EL_TRIA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == PRISM)        {nNodes = 6; EL_KIND = EL_TRIA;}
+    if (geometry->elem[iElem]->GetVTK_Type() == PYRAMID)      {nNodes = 5; EL_KIND = EL_PYRAM;}
+    if (geometry->elem[iElem]->GetVTK_Type() == PRISM)        {nNodes = 6; EL_KIND = EL_PRISM;}
     if (geometry->elem[iElem]->GetVTK_Type() == HEXAHEDRON)   {nNodes = 8; EL_KIND = EL_HEXA;}
     
     /*--- For the number of nodes, we get the coordinates from the connectivity matrix ---*/
@@ -1468,11 +1433,10 @@ void CFEASolver::Compute_MassRes(CGeometry *geometry, CSolver **solver_container
   for (iElem = 0; iElem < geometry->GetnElem(); iElem++) {
 
     if (geometry->elem[iElem]->GetVTK_Type() == TRIANGLE)     {nNodes = 3; EL_KIND = EL_TRIA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == QUADRILATERAL)    {nNodes = 4; EL_KIND = EL_QUAD;}
-
+    if (geometry->elem[iElem]->GetVTK_Type() == QUADRILATERAL){nNodes = 4; EL_KIND = EL_QUAD;}
     if (geometry->elem[iElem]->GetVTK_Type() == TETRAHEDRON)  {nNodes = 4; EL_KIND = EL_TETRA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == PYRAMID)      {nNodes = 5; EL_KIND = EL_TRIA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == PRISM)        {nNodes = 6; EL_KIND = EL_TRIA;}
+    if (geometry->elem[iElem]->GetVTK_Type() == PYRAMID)      {nNodes = 5; EL_KIND = EL_PYRAM;}
+    if (geometry->elem[iElem]->GetVTK_Type() == PRISM)        {nNodes = 6; EL_KIND = EL_PRISM;}
     if (geometry->elem[iElem]->GetVTK_Type() == HEXAHEDRON)   {nNodes = 8; EL_KIND = EL_HEXA;}
 
     /*--- For the number of nodes, we get the coordinates from the connectivity matrix ---*/
@@ -1543,10 +1507,10 @@ void CFEASolver::Compute_NodalStressRes(CGeometry *geometry, CSolver **solver_co
   for (iElem = 0; iElem < geometry->GetnElem(); iElem++) {
     
     if (geometry->elem[iElem]->GetVTK_Type() == TRIANGLE)     {nNodes = 3; EL_KIND = EL_TRIA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == QUADRILATERAL) {nNodes = 4; EL_KIND = EL_QUAD;}
+    if (geometry->elem[iElem]->GetVTK_Type() == QUADRILATERAL){nNodes = 4; EL_KIND = EL_QUAD;}
     if (geometry->elem[iElem]->GetVTK_Type() == TETRAHEDRON)  {nNodes = 4; EL_KIND = EL_TETRA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == PYRAMID)      {nNodes = 5; EL_KIND = EL_TRIA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == PRISM)        {nNodes = 6; EL_KIND = EL_TRIA;}
+    if (geometry->elem[iElem]->GetVTK_Type() == PYRAMID)      {nNodes = 5; EL_KIND = EL_PYRAM;}
+    if (geometry->elem[iElem]->GetVTK_Type() == PRISM)        {nNodes = 6; EL_KIND = EL_PRISM;}
     if (geometry->elem[iElem]->GetVTK_Type() == HEXAHEDRON)   {nNodes = 8; EL_KIND = EL_HEXA;}
     
     /*--- For the number of nodes, we get the coordinates from the connectivity matrix ---*/
@@ -1635,10 +1599,10 @@ void CFEASolver::Compute_NodalStress(CGeometry *geometry, CSolver **solver_conta
   for (iElem = 0; iElem < geometry->GetnElem(); iElem++) {
     
     if (geometry->elem[iElem]->GetVTK_Type() == TRIANGLE)     {nNodes = 3; EL_KIND = EL_TRIA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == QUADRILATERAL) {nNodes = 4; EL_KIND = EL_QUAD;}
+    if (geometry->elem[iElem]->GetVTK_Type() == QUADRILATERAL){nNodes = 4; EL_KIND = EL_QUAD;}
     if (geometry->elem[iElem]->GetVTK_Type() == TETRAHEDRON)  {nNodes = 4; EL_KIND = EL_TETRA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == PYRAMID)      {nNodes = 5; EL_KIND = EL_TRIA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == PRISM)        {nNodes = 6; EL_KIND = EL_TRIA;}
+    if (geometry->elem[iElem]->GetVTK_Type() == PYRAMID)      {nNodes = 5; EL_KIND = EL_PYRAM;}
+    if (geometry->elem[iElem]->GetVTK_Type() == PRISM)        {nNodes = 6; EL_KIND = EL_PRISM;}
     if (geometry->elem[iElem]->GetVTK_Type() == HEXAHEDRON)   {nNodes = 8; EL_KIND = EL_HEXA;}
     
     /*--- For the number of nodes, we get the coordinates from the connectivity matrix ---*/
@@ -1908,10 +1872,10 @@ void CFEASolver::Compute_DeadLoad(CGeometry *geometry, CSolver **solver_containe
   for (iElem = 0; iElem < geometry->GetnElem(); iElem++) {
     
     if (geometry->elem[iElem]->GetVTK_Type() == TRIANGLE)     {nNodes = 3; EL_KIND = EL_TRIA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == QUADRILATERAL) {nNodes = 4; EL_KIND = EL_QUAD;}
+    if (geometry->elem[iElem]->GetVTK_Type() == QUADRILATERAL){nNodes = 4; EL_KIND = EL_QUAD;}
     if (geometry->elem[iElem]->GetVTK_Type() == TETRAHEDRON)  {nNodes = 4; EL_KIND = EL_TETRA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == PYRAMID)      {nNodes = 5; EL_KIND = EL_TRIA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == PRISM)        {nNodes = 6; EL_KIND = EL_TRIA;}
+    if (geometry->elem[iElem]->GetVTK_Type() == PYRAMID)      {nNodes = 5; EL_KIND = EL_PYRAM;}
+    if (geometry->elem[iElem]->GetVTK_Type() == PRISM)        {nNodes = 6; EL_KIND = EL_PRISM;}
     if (geometry->elem[iElem]->GetVTK_Type() == HEXAHEDRON)   {nNodes = 8; EL_KIND = EL_HEXA;}
     
     /*--- For the number of nodes, we get the coordinates from the connectivity matrix ---*/
@@ -2009,82 +1973,35 @@ void CFEASolver::BC_Clamped(CGeometry *geometry, CSolver **solver_container, CNu
                                        unsigned short val_marker) {
   
   unsigned long iPoint, iVertex;
-  unsigned long iVar, jVar;
   
   bool dynamic = (config->GetDynamic_Analysis() == DYNAMIC);
+
+  Solution[0] = 0.0;
+  Solution[1] = 0.0;
+  if (nDim==3) Solution[2] = 0.0;
   
   for (iVertex = 0; iVertex < geometry->nVertex[val_marker]; iVertex++) {
     
     /*--- Get node index ---*/
-    
     iPoint = geometry->vertex[val_marker][iVertex]->GetNode();
-    
-    if (geometry->node[iPoint]->GetDomain()) {
-      
-      if (nDim == 2) {
-        Solution[0] = 0.0;  Solution[1] = 0.0;
-        Residual[0] = 0.0;  Residual[1] = 0.0;
-      }
-      else {
-        Solution[0] = 0.0;  Solution[1] = 0.0;  Solution[2] = 0.0;
-        Residual[0] = 0.0;  Residual[1] = 0.0;  Residual[2] = 0.0;
-      }
-      
-      node[iPoint]->SetSolution(Solution);
-      
-      if (dynamic) {
-        node[iPoint]->SetSolution_Vel(Solution);
-        node[iPoint]->SetSolution_Accel(Solution);
-      }
-      
-      
-      /*--- Initialize the reaction vector ---*/
-      LinSysReact.SetBlock(iPoint, Residual);
-      
-      LinSysRes.SetBlock(iPoint, Residual);
-      LinSysSol.SetBlock(iPoint, Solution);
-      
-      /*--- STRONG ENFORCEMENT OF THE DISPLACEMENT BOUNDARY CONDITION ---*/
-      
-      /*--- Delete the columns for a particular node ---*/
-      
-      for (iVar = 0; iVar < nPoint; iVar++) {
-        if (iVar==iPoint) {
-          Jacobian.SetBlock(iVar,iPoint,mId_Aux);
-        }
-        else {
-          Jacobian.SetBlock(iVar,iPoint,mZeros_Aux);
-        }
-      }
-      
-      /*--- Delete the rows for a particular node ---*/
-      for (jVar = 0; jVar < nPoint; jVar++) {
-        if (iPoint!=jVar) {
-          Jacobian.SetBlock(iPoint,jVar,mZeros_Aux);
-        }
-      }
-      
-      /*--- If the problem is dynamic ---*/
-      /*--- Enforce that in the previous time step all nodes had 0 U, U', U'' ---*/
-      
-      if(dynamic) {
-        
-        node[iPoint]->SetSolution_time_n(Solution);
-        node[iPoint]->SetSolution_Vel_time_n(Solution);
-        node[iPoint]->SetSolution_Accel_time_n(Solution);
-        
-      }
-      
-    } else {
-      
-      /*--- Delete the column (iPoint is halo so Send/Recv does the rest) ---*/
-      
-      for (iVar = 0; iVar < nPoint; iVar++) Jacobian.SetBlock(iVar,iPoint,mZeros_Aux);
-      
+
+    /*--- Set and enforce solution at current and previous time-step ---*/
+    node[iPoint]->SetSolution(Solution);
+
+    if (dynamic) {
+      node[iPoint]->SetSolution_Vel(Solution);
+      node[iPoint]->SetSolution_Accel(Solution);
+      node[iPoint]->SetSolution_time_n(Solution);
+      node[iPoint]->SetSolution_Vel_time_n(Solution);
+      node[iPoint]->SetSolution_Accel_time_n(Solution);
     }
-    
+
+    LinSysSol.SetBlock(iPoint, Solution);
+    LinSysReact.SetBlock(iPoint, Solution);
+    Jacobian.EnforceSolutionAtNode(iPoint, Solution, LinSysRes);
+
   }
-  
+
 }
 
 void CFEASolver::BC_Clamped_Post(CGeometry *geometry, CSolver **solver_container, CNumerics *numerics, CConfig *config,
@@ -2120,8 +2037,8 @@ void CFEASolver::BC_Clamped_Post(CGeometry *geometry, CSolver **solver_container
 void CFEASolver::BC_DispDir(CGeometry *geometry, CSolver **solver_container, CNumerics *numerics, CConfig *config,
                                             unsigned short val_marker) {
 
-  unsigned short iDim, jDim;
-
+  unsigned short iDim;
+  unsigned long iNode, iVertex;
   su2double DispDirVal = config->GetDisp_Dir_Value(config->GetMarker_All_TagBound(val_marker));
   su2double DispDirMult = config->GetDisp_Dir_Multiplier(config->GetMarker_All_TagBound(val_marker));
   su2double *Disp_Dir_Local= config->GetDisp_Dir(config->GetMarker_All_TagBound(val_marker));
@@ -2183,84 +2100,14 @@ void CFEASolver::BC_DispDir(CGeometry *geometry, CSolver **solver_container, CNu
   for (iDim = 0; iDim < nDim; iDim++)
     Disp_Dir[iDim] = TotalDisp * Disp_Dir_Unit[iDim];
 
-  unsigned long iNode, iVertex;
-  unsigned long iPoint, jPoint;
-
-  su2double valJacobian_ij_00 = 0.0;
-  su2double auxJacobian_ij[3][3] = {{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};
-
   for (iVertex = 0; iVertex < geometry->nVertex[val_marker]; iVertex++) {
 
     /*--- Get node index ---*/
-
     iNode = geometry->vertex[val_marker][iVertex]->GetNode();
 
-    if (geometry->node[iNode]->GetDomain()) {
-
-      if (nDim == 2) {
-        Solution[0] = Disp_Dir[0];  Solution[1] = Disp_Dir[1];
-        Residual[0] = Disp_Dir[0];  Residual[1] = Disp_Dir[1];
-      }
-      else {
-        Solution[0] = Disp_Dir[0];  Solution[1] = Disp_Dir[1];  Solution[2] = Disp_Dir[2];
-        Residual[0] = Disp_Dir[0];  Residual[1] = Disp_Dir[1];  Residual[2] = Disp_Dir[2];
-      }
-
-      /*--- Initialize the reaction vector ---*/
-
-      LinSysRes.SetBlock(iNode, Residual);
-      LinSysSol.SetBlock(iNode, Solution);
-
-      /*--- STRONG ENFORCEMENT OF THE DISPLACEMENT BOUNDARY CONDITION ---*/
-
-      /*--- Delete the full row for node iNode ---*/
-      for (jPoint = 0; jPoint < nPoint; jPoint++){
-        if (iNode != jPoint) {
-          Jacobian.SetBlock(iNode,jPoint,mZeros_Aux);
-        }
-        else{
-          Jacobian.SetBlock(iNode,jPoint,mId_Aux);
-        }
-      }
-
-    }
-
-    /*--- Always delete the iNode column, even for halos ---*/
-
-    for (iPoint = 0; iPoint < nPoint; iPoint++) {
-
-      /*--- Check if the term K(iPoint, iNode) is 0 ---*/
-      valJacobian_ij_00 = Jacobian.GetBlock(iPoint,iNode,0,0);
-
-      /*--- If the node iNode has a crossed dependency with the point iPoint ---*/
-      if (valJacobian_ij_00 != 0.0 ){
-
-        /*--- Retrieve the Jacobian term ---*/
-        for (iDim = 0; iDim < nDim; iDim++){
-          for (jDim = 0; jDim < nDim; jDim++){
-            auxJacobian_ij[iDim][jDim] = Jacobian.GetBlock(iPoint,iNode,iDim,jDim);
-          }
-        }
-
-        /*--- Multiply by the imposed displacement ---*/
-        for (iDim = 0; iDim < nDim; iDim++){
-          Residual[iDim] = 0.0;
-          for (jDim = 0; jDim < nDim; jDim++){
-            Residual[iDim] += auxJacobian_ij[iDim][jDim] * Disp_Dir[jDim];
-          }
-        }
-
-        if (iNode != iPoint) {
-          /*--- The term is substracted from the residual (right hand side) ---*/
-          LinSysRes.SubtractBlock(iPoint, Residual);
-          /*--- The Jacobian term is now set to 0 ---*/
-          Jacobian.SetBlock(iPoint,iNode,mZeros_Aux);
-        }
-
-      }
-
-    }
-
+    /*--- Set and enforce solution ---*/
+    LinSysSol.SetBlock(iNode, Disp_Dir);
+    Jacobian.EnforceSolutionAtNode(iNode, Disp_Dir, LinSysRes);
   }
 
 }
@@ -4430,11 +4277,10 @@ void CFEASolver::Stiffness_Penalty(CGeometry *geometry, CSolver **solver, CNumer
   for (iElem = 0; iElem < geometry->GetnElem(); iElem++) {
 
     if (geometry->elem[iElem]->GetVTK_Type() == TRIANGLE)     {nNodes = 3; EL_KIND = EL_TRIA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == QUADRILATERAL)    {nNodes = 4; EL_KIND = EL_QUAD;}
-
+    if (geometry->elem[iElem]->GetVTK_Type() == QUADRILATERAL){nNodes = 4; EL_KIND = EL_QUAD;}
     if (geometry->elem[iElem]->GetVTK_Type() == TETRAHEDRON)  {nNodes = 4; EL_KIND = EL_TETRA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == PYRAMID)      {nNodes = 5; EL_KIND = EL_TRIA;}
-    if (geometry->elem[iElem]->GetVTK_Type() == PRISM)        {nNodes = 6; EL_KIND = EL_TRIA;}
+    if (geometry->elem[iElem]->GetVTK_Type() == PYRAMID)      {nNodes = 5; EL_KIND = EL_PYRAM;}
+    if (geometry->elem[iElem]->GetVTK_Type() == PRISM)        {nNodes = 6; EL_KIND = EL_PRISM;}
     if (geometry->elem[iElem]->GetVTK_Type() == HEXAHEDRON)   {nNodes = 8; EL_KIND = EL_HEXA;}
 
     /*--- For the number of nodes, we get the coordinates from the connectivity matrix ---*/

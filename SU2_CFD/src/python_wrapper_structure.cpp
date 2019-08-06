@@ -35,9 +35,9 @@
  * License along with SU2. If not, see <http://www.gnu.org/licenses/>.
  */
 
- #include "../include/driver_structure.hpp"
+ #include "../include/drivers/CDriver.hpp"
 
-void CDriver::PythonInterface_Preprocessing(){
+void CDriver::PythonInterface_Preprocessing(CConfig **config, CGeometry ****geometry, CSolver *****solver){
 
   int rank = MASTER_NODE;
 
@@ -47,17 +47,23 @@ void CDriver::PythonInterface_Preprocessing(){
 
   /* --- Initialize boundary conditions customization, this is achieve through the Python wrapper --- */
   for(iZone=0; iZone < nZone; iZone++){
-    if (rank == MASTER_NODE) cout << "Setting customized boundary conditions for zone " << iZone << endl;
-    for (iMesh = 0; iMesh <= config_container[iZone]->GetnMGLevels(); iMesh++) {
-      geometry_container[iZone][INST_0][iMesh]->SetCustomBoundary(config_container[iZone]);
-    }
-    geometry_container[iZone][INST_0][MESH_0]->UpdateCustomBoundaryConditions(geometry_container[iZone][INST_0], config_container[iZone]);
-
-    if ((config_container[iZone]->GetKind_Solver() == EULER) ||
-        (config_container[iZone]->GetKind_Solver() == NAVIER_STOKES) ||
-        (config_container[iZone]->GetKind_Solver() == RANS)) {
-
-          solver_container[iZone][INST_0][MESH_0][FLOW_SOL]->UpdateCustomBoundaryConditions(geometry_container[iZone][INST_0], config_container[iZone]);
+    
+    if (config[iZone]->GetnMarker_PyCustom() > 0){
+      
+      if (rank == MASTER_NODE) cout << endl << "----------------- Python Interface Preprocessing ( Zone "<< iZone <<" ) -----------------" << endl;
+      
+      if (rank == MASTER_NODE) cout << "Setting customized boundary conditions for zone " << iZone << endl;
+      for (iMesh = 0; iMesh <= config[iZone]->GetnMGLevels(); iMesh++) {
+        geometry[iZone][INST_0][iMesh]->SetCustomBoundary(config[iZone]);
+      }
+      geometry[iZone][INST_0][MESH_0]->UpdateCustomBoundaryConditions(geometry[iZone][INST_0], config[iZone]);
+      
+      if ((config[iZone]->GetKind_Solver() == EULER) ||
+          (config[iZone]->GetKind_Solver() == NAVIER_STOKES) ||
+          (config[iZone]->GetKind_Solver() == RANS)) {
+        
+        solver[iZone][INST_0][MESH_0][FLOW_SOL]->UpdateCustomBoundaryConditions(geometry[iZone][INST_0], config[iZone]);
+      }
     }
   }
   /*--- Initialize some variables used for external communications trough the Py wrapper. ---*/
@@ -795,88 +801,6 @@ map<string, string> CDriver::GetAllBoundaryMarkersType(){
   }
 
   return allBoundariesTypeMap;
-}
-
-void CGeneralDriver::ResetConvergence() {
-
-  switch (config_container[ZONE_0]->GetKind_Solver()) {
-
-    case EULER: case NAVIER_STOKES: case RANS:
-    integration_container[ZONE_0][INST_0][FLOW_SOL]->SetConvergence(false);
-      if (config_container[ZONE_0]->GetKind_Solver() == RANS) integration_container[ZONE_0][INST_0][TURB_SOL]->SetConvergence(false);
-      if(config_container[ZONE_0]->GetKind_Trans_Model() == LM) integration_container[ZONE_0][INST_0][TRANS_SOL]->SetConvergence(false);
-    break;
-
-  case FEM_ELASTICITY:
-    integration_container[ZONE_0][INST_0][FEA_SOL]->SetConvergence(false);
-    break;
-
-  case DISC_ADJ_FEM:
-    integration_container[ZONE_0][INST_0][ADJFEA_SOL]->SetConvergence(false);
-    break;
-
-  case ADJ_EULER: case ADJ_NAVIER_STOKES: case ADJ_RANS: case DISC_ADJ_EULER: case DISC_ADJ_NAVIER_STOKES: case DISC_ADJ_RANS:
-    integration_container[ZONE_0][INST_0][ADJFLOW_SOL]->SetConvergence(false);
-      if( (config_container[ZONE_0]->GetKind_Solver() == ADJ_RANS) || (config_container[ZONE_0]->GetKind_Solver() == DISC_ADJ_RANS) )
-      integration_container[ZONE_0][INST_0][ADJTURB_SOL]->SetConvergence(false);
-    break;
-
-  }
-
-}
-
-void CGeneralDriver::StaticMeshUpdate() {
-
-  int rank = MASTER_NODE;
-
-#ifdef HAVE_MPI
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-#endif
-
-  if(rank == MASTER_NODE) cout << " Deforming the volume grid." << endl;
-  grid_movement[ZONE_0][INST_0]->SetVolume_Deformation(geometry_container[ZONE_0][INST_0][MESH_0], config_container[ZONE_0], true);
-
-  if(rank == MASTER_NODE) cout << "No grid velocity to be computed : static grid deformation." << endl;
-
-  if(rank == MASTER_NODE) cout << " Updating multigrid structure." << endl;
-  grid_movement[ZONE_0][INST_0]->UpdateMultiGrid(geometry_container[ZONE_0][INST_0], config_container[ZONE_0]);
-
-}
-
-void CGeneralDriver::SetInitialMesh() {
-
-  unsigned long iPoint;
-
-  StaticMeshUpdate();
-
-  /*--- Propagate the initial deformation to the past ---*/
-  //if (!restart) {
-  for (iMesh = 0; iMesh <= config_container[ZONE_0]->GetnMGLevels(); iMesh++) {
-      for(iPoint = 0; iPoint < geometry_container[ZONE_0][INST_0][iMesh]->GetnPoint(); iPoint++) {
-      //solver_container[ZONE_0][INST_0][iMesh][FLOW_SOL]->node[iPoint]->Set_Solution_time_n();
-      //solver_container[ZONE_0][INST_0][iMesh][FLOW_SOL]->node[iPoint]->Set_Solution_time_n1();
-      geometry_container[ZONE_0][INST_0][iMesh]->node[iPoint]->SetVolume_n();
-      geometry_container[ZONE_0][INST_0][iMesh]->node[iPoint]->SetVolume_nM1();
-      geometry_container[ZONE_0][INST_0][iMesh]->node[iPoint]->SetCoord_n();
-      geometry_container[ZONE_0][INST_0][iMesh]->node[iPoint]->SetCoord_n1();
-    }
-  }
-  //}
-}
-
-void CGeneralDriver::BoundaryConditionsUpdate(){
-
-  int rank = MASTER_NODE;
-  unsigned short iZone;
-
-#ifdef HAVE_MPI
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-#endif
-
-  if(rank == MASTER_NODE) cout << "Updating boundary conditions." << endl;
-  for(iZone = 0; iZone < nZone; iZone++){
-    geometry_container[iZone][INST_0][MESH_0]->UpdateCustomBoundaryConditions(geometry_container[iZone][INST_0], config_container[iZone]);
-  }
 }
 
 void CFluidDriver::ResetConvergence() {

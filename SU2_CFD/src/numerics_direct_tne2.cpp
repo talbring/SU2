@@ -35,7 +35,7 @@
  * License along with SU2. If not, see <http://www.gnu.org/licenses/>.
  */
 #include "../include/numerics_structure.hpp"
-#include "../include/variable_structure.hpp"
+#include "../include/variables/CTNE2EulerVariable.hpp"
 #include <limits>
 
 CUpwRoe_TNE2::CUpwRoe_TNE2(unsigned short val_nDim, unsigned short val_nVar,
@@ -2355,7 +2355,7 @@ void CSource_TNE2::GetKeqConstants(su2double *A, unsigned short val_Reaction,
   pwr        = floor(log10(N));
 
   /*--- Bound the interpolation to table limit values ---*/
-  iIndex = int(pwr) - tbl_offset;
+  iIndex = pwr - tbl_offset;
   if (iIndex <= 0) {
     for (ii = 0; ii < 5; ii++)
       A[ii] = RxnConstantTable[0][ii];
