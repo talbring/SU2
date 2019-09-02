@@ -4657,11 +4657,9 @@ void CTNE2EulerSolver::BC_Outlet(CGeometry *geometry, CSolver **solution_contain
 
       }
 
-<<<<<<< HEAD
-=======
+
       /*--- Setting Last remaining variables ---*/
       V_outlet[H_INDEX]= (U_outlet[nVar-2]+Pressure)/Density;
->>>>>>> feature_TNE2
 
       /*--- Set various quantities in the solver class ---*/
       conv_numerics->SetConservative(U_domain, U_outlet);
