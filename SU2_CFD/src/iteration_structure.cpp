@@ -2999,7 +2999,7 @@ void CDiscAdjFEAIteration::SetRecording(COutput *output,
 
   /*--- Register structural variables and objective function as output ---*/
 
-  RegisterOutput(solver, geometry, config, val_iZone, val_iInst);
+  RegisterOutput(solver, geometry, config, output, val_iZone, val_iInst);
 
   /*--- Stop the recording ---*/
 
@@ -3022,6 +3022,13 @@ void CDiscAdjFEAIteration::SetRecording(CSolver *****solver,
                                         unsigned short val_iZone,
                                         unsigned short val_iInst,
                                         unsigned short kind_recording) {
+
+  /*--- Set correct time iteration for recording if dynamic simulation ---*/
+
+  if (config[val_iZone]->GetDynamic_Analysis() == DYNAMIC) {
+    unsigned long ExtIter = config[val_iZone]->GetExtIter();
+    config[val_iZone]->SetExtIter(ExtIter);
+  }
 
   /*--- Prepare for recording by resetting the solution to the initial converged solution ---*/
 
@@ -3161,7 +3168,7 @@ void CDiscAdjFEAIteration::SetDependencies(CSolver *****solver, CGeometry ****ge
 
 }
 
-void CDiscAdjFEAIteration::RegisterOutput(CSolver *****solver, CGeometry ****geometry, CConfig **config, unsigned short iZone, unsigned short iInst){
+void CDiscAdjFEAIteration::RegisterOutput(CSolver *****solver, CGeometry ****geometry, CConfig **config, COutput* output, unsigned short iZone, unsigned short iInst){
 
   /*--- Register conservative variables as output of the iteration ---*/
 

@@ -130,7 +130,7 @@ void CDiscAdjSinglezoneDriver::Preprocess(unsigned long TimeIter) {
    *--- respect to the conservative variables. Since these derivatives do not change in the steady state case
    *--- we only have to record if the current recording is different from the main variables. ---*/
 
-  if (RecordingState != MainVariables){
+  if ((RecordingState != MainVariables) || (config->GetTime_Domain())){
 
     MainRecording();
 
@@ -279,7 +279,7 @@ void CDiscAdjSinglezoneDriver::SetRecording(unsigned short kind_recording){
 
 void CDiscAdjSinglezoneDriver::SetAdj_ObjFunction(){
 
-  bool time_stepping = config->GetUnsteady_Simulation() != STEADY;
+  bool time_stepping = config->GetTime_Domain();
   unsigned long IterAvg_Obj = config->GetIter_Avg_Objective();
   unsigned long ExtIter = config->GetExtIter();
   su2double seeding = 1.0;
