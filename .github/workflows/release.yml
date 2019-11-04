@@ -1,7 +1,9 @@
 name: Create Release
 
-on: [release]
-
+on: 
+  release:
+    types: [unpublished]
+    
 jobs:
   build:
     name: Build SU2
