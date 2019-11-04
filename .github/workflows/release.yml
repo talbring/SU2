@@ -20,7 +20,7 @@ jobs:
     - name: Build
       uses: docker://su2code/build-su2-darwin:latest
       with:
-        args: -b ${{github.ref}} -f "${{matrix.flags}}"
+        args: -b ${{github.sha}} -f "${{matrix.flags}}"
     - name: Create Archive
       run: |
         cd install
