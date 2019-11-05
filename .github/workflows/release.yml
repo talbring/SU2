@@ -1,8 +1,6 @@
 name: Create Release
 
-on: 
-  release:
-    types: [unpublished]
+on: [release]
     
 jobs:
   build:
