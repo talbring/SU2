@@ -13,6 +13,7 @@ categories:
   - title: ':wrench: Maintenance'
     label: 'chore'
 change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
+branches: release_workflow
 template: |
   ## Changes
 
