@@ -1,0 +1,19 @@
+name-template: 'v$NEXT_PATCH_VERSION'
+tag-template: 'v$NEXT_PATCH_VERSION'
+categories:
+  - title: ':rocket: Features'
+    labels:
+      - 'feature'
+      - 'enhancement'
+  - title: ':pill: Bug Fixes'
+    labels:
+      - 'fix'
+      - 'bugfix'
+      - 'bug'
+  - title: ':wrench: Maintenance'
+    label: 'chore'
+change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
+branches: release_workflow
+template: |
+  ## Changes
+  $CHANGES
