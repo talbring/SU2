@@ -102,29 +102,36 @@ public:
    */
   void StartSolver() override;
 
+protected:
+
   /*!
    * \brief [Overload] Run an discrete adjoint update of all solvers within multiple zones.
    */
   void Run() override;
 
   /*!
-   * \brief Record one iteration of a flow iteration in within multiple zones.
-   * \param[in] kind_recording - Kind of variables with regard to which we are recording.
+   * \brief Record one iteration of the primal problem within each zone.
+   * \param[in] kind_recording - Kind of variables with respect to which we are recording.
    * \param[in] tape_type - indicator which part of a solution update will be recorded
    * \param[in] record_zone - zone where solution update will be recorded
    */
   void SetRecording(unsigned short kind_recording, Kind_Tape tape_type, unsigned short record_zone);
 
   /*!
+   * \brief Transfer data between zones and update grids when required.
+   */
+  void HandleDataTransfer();
+
+  /*!
    * \brief Run one direct iteration in a zone.
    * \param[in] iZone - Zone in which we run an iteration.
-   * \param[in] kind_recording - Kind of variables with regard to which we are recording.
+   * \param[in] kind_recording - Kind of variables with respect to which we are recording.
    */
   void DirectIteration(unsigned short iZone, unsigned short kind_recording);
 
   /*!
    * \brief Set the objective function.
-   * \param[in] kind_recording - Kind of variables with regard to which we are recording.
+   * \param[in] kind_recording - Kind of variables with respect to which we are recording.
    */
   void SetObjFunction(unsigned short kind_recording);
 
@@ -136,8 +143,9 @@ public:
   /*!
    * \brief Summary of all routines to evaluate the adjoints in iZone.
    * \param[in] iZone - Zone in which adjoints are evaluated depending on their (preceding) seeding.
+   * \param[in] eval_transfer - Evaluate adjoints of transfer and mesh deformation routines.
    */
-  void ComputeAdjoints(unsigned short iZone);
+  void ComputeAdjoints(unsigned short iZone, bool eval_transfer = true);
 
   /*!
    * \brief Add External_Old vector to Solution.
@@ -172,6 +180,12 @@ public:
    * \param[in] iZone - Zone where data between solvers is transferred.
    */
   void Set_BGSSolution(unsigned short iZone);
+
+  /*!
+   * \brief Puts BGSSolution back into Solution.
+   * \param[in] iZone - Zone where data between solvers is transferred.
+   */
+  void Set_Solution_To_BGSSolution(unsigned short iZone);
 
   /*!
    * \brief Compute BGS residuals.

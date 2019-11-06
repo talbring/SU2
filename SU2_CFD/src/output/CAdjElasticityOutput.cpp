@@ -110,7 +110,6 @@ void CAdjElasticityOutput::SetHistoryOutputFields(CConfig *config){
   AddHistoryOutput("SENS_E", "Sens[E]",  ScreenOutputFormat::SCIENTIFIC, "SENSITIVITY", "");
   AddHistoryOutput("SENS_NU","Sens[Nu]", ScreenOutputFormat::SCIENTIFIC, "SENSITIVITY", "");
 
-
 }
 
 inline void CAdjElasticityOutput::LoadHistoryData(CConfig *config, CGeometry *geometry, CSolver **solver) {
