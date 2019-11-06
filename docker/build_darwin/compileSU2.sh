@@ -14,9 +14,6 @@ Note: If you specify a working directory using the --workdir option for docker,
 flags=""
 branch=""
 workdir=$PWD
-
-export CCACHE_DIR=$workdir/ccache
-
 if [ "$#" -ne 0 ]; then
   while [ "$(echo $1 | cut -c1)" = "-" ]
     do
