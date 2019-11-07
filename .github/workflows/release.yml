@@ -1,6 +1,8 @@
 name: Create Release
 
-on: release
+on:
+  release:
+    types: [edited]
     
 jobs:
   build:
@@ -20,7 +22,7 @@ jobs:
     - name: Build
       uses: docker://su2code/build-su2-darwin:latest
       with:
-        args: -b ${{github.sha}} -f "${{matrix.flags}}"
+        args: -b ${{github.tag}} -f "${{matrix.flags}}"
     - name: Create Archive
       run: |
         cd install
