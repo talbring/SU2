@@ -1,0 +1,4 @@
+feature: feature_*
+fix: fix_*
+chore: chore_*
+no_changelog: ['!feature_*', '!fix_*', '!chore_*']
