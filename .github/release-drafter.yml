@@ -15,7 +15,7 @@ categories:
       - 'chore'
       - 'maintenance'
 change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
-branches: develop
+branches: release_workflow
 exclude-labels:
   - 'no_changelog'
 template: |
