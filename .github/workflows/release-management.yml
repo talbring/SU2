@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os_bin: [macos, linux]
+        os_bin: [macos64, linux64]
         include: 
           - os_bin: macos
             flags: '-Dwith-mpi=disabled --cross-file=/hostfile_darwin'
@@ -27,13 +27,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Build
-        uses: docker://su2code/build-su2-darwin:latest
+        uses: docker://su2code/build-su2-cross:latest
         with:
           args: -b develop -f "${{matrix.flags}}"
       - name: Create Archive
         run: |
           cd install
-          zip -r ${{matrix.os_bin}}.zip bin      
+          tar -czf ${{matrix.os_bin}}.tar.gz bin/*      
       - name: Upload Release Asset
         id: upload-release-asset 
         uses: actions/upload-release-asset@v1.0.1
@@ -41,6 +41,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.update_release.outputs.uploadurl }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
-          asset_path: install/${{matrix.os_bin}}.zip
-          asset_name: install/${{matrix.os_bin}}.zip
-          asset_content_type: application/zip
+          asset_path: install/${{matrix.os_bin}}.tar.gz
+          asset_name: ${{matrix.os_bin}}.tar.gz
+          asset_content_type: application/gzip
