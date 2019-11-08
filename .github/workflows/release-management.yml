@@ -26,6 +26,21 @@ jobs:
         id: update_release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Upload Assests
+      - name: Build
+        uses: docker://su2code/build-su2-darwin:latest
+        with:
+          args: -b develop -f "${{matrix.flags}}"
+      - name: Create Archive
         run: |
-          echo ${{ steps.update_release.outputs.uploadurl }}
+          cd install
+          zip -r ${{matrix.os_bin}}.zip bin      
+      - name: Upload Release Asset
+        id: upload-release-asset 
+        uses: actions/upload-release-asset@v1.0.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.update_release.outputs.uploadurl }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+          asset_path: install/${{matrix.os_bin}}.zip
+          asset_name: install/${{matrix.os_bin}}.zip
+          asset_content_type: application/zip
