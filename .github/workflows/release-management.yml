@@ -31,7 +31,7 @@ jobs:
           cd install
           tar -czf ../${{matrix.os_bin}}.tar.gz bin/*     
       # Drafts your next Release notes as Pull Requests are merged into "master"
-      - uses: talbring/jenkins-release-drafter@v5.2.0-jenkins-8
+      - uses: talbring/jenkins-release-drafter@v5.2.0-jenkins-9
         name: Update Release
         id: update_release
         env:
