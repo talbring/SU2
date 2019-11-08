@@ -44,3 +44,4 @@ jobs:
           asset_path: ${{matrix.os_bin}}.tar.gz
           asset_name: SU2-${{ steps.update_release.outputs.tagname }}-${{matrix.os_bin}}.tar.gz
           asset_content_type: application/gzip
+          
