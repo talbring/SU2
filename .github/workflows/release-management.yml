@@ -33,7 +33,7 @@ jobs:
       - name: Create Archive
         run: |
           cd install
-          tar -czf ${{matrix.os_bin}}.tar.gz bin/*      
+          tar -czf ../${{matrix.os_bin}}.tar.gz bin/*      
       - name: Upload Release Asset
         id: upload-release-asset 
         uses: actions/upload-release-asset@v1.0.1
@@ -41,6 +41,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.update_release.outputs.uploadurl }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
-          asset_path: install/${{matrix.os_bin}}.tar.gz
+          asset_path: ${{matrix.os_bin}}.tar.gz
           asset_name: ${{matrix.os_bin}}.tar.gz
           asset_content_type: application/gzip
