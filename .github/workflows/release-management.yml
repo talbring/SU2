@@ -15,9 +15,9 @@ jobs:
         os_bin: [macos, linux]
         include: 
           - os_bin: macos
-            flags: '-Dwith-mpi=false --cross-file=/hostfile_darwin'
+            flags: '-Dwith-mpi=disabled --cross-file=/hostfile_darwin'
           - os_bin: linux
-            flags: '-Dwith-mpi=false'
+            flags: '-Dwith-mpi=disabled'
     runs-on: ubuntu-latest
     steps:
       # Drafts your next Release notes as Pull Requests are merged into "master"
