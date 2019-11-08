@@ -15,7 +15,7 @@ jobs:
         os_bin: [macos64, linux64, win64]
         include: 
           - os_bin: win64
-            flags: '-Dwith-mpi=disabled --cross-file=/hostfile_windows'
+            flags: '-Dwith-mpi=disabled --cross-file=/hostfile_windows -Denable-tecio=false'
           - os_bin: macos64
             flags: '-Dwith-mpi=disabled --cross-file=/hostfile_darwin'
           - os_bin: linux64
