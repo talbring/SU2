@@ -12,16 +12,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os_bin: [macos64, linux64]
+        os_bin: [macos64, linux64, win64]
         include: 
-          - os_bin: macos
+          - os_bin: win64
+            flags: '-Dwith-mpi=disabled --cross-file=/hostfile_windows'
+          - os_bin: macos64
             flags: '-Dwith-mpi=disabled --cross-file=/hostfile_darwin'
-          - os_bin: linux
+          - os_bin: linux64
             flags: '-Dwith-mpi=disabled'
     runs-on: ubuntu-latest
     steps:
       # Drafts your next Release notes as Pull Requests are merged into "master"
-      - uses: talbring/jenkins-release-drafter@v5.2.0-jenkins-7
+      - uses: talbring/jenkins-release-drafter@v5.2.0-jenkins-8
         name: Update Release
         id: update_release
         env:
@@ -29,7 +31,7 @@ jobs:
       - name: Build
         uses: docker://su2code/build-su2-cross:latest
         with:
-          args: -b develop -f "${{matrix.flags}}"
+          args: -b feature_release_drafter -f "${{matrix.flags}}"
       - name: Create Archive
         run: |
           cd install
