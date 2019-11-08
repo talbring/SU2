@@ -22,12 +22,6 @@ jobs:
             flags: '-Dwith-mpi=disabled'
     runs-on: ubuntu-latest
     steps:
-      # Drafts your next Release notes as Pull Requests are merged into "master"
-      - uses: talbring/jenkins-release-drafter@v5.2.0-jenkins-8
-        name: Update Release
-        id: update_release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Build
         uses: docker://su2code/build-su2-cross:latest
         with:
@@ -35,7 +29,13 @@ jobs:
       - name: Create Archive
         run: |
           cd install
-          tar -czf ../${{matrix.os_bin}}.tar.gz bin/*      
+          tar -czf ../${{matrix.os_bin}}.tar.gz bin/*     
+      # Drafts your next Release notes as Pull Requests are merged into "master"
+      - uses: talbring/jenkins-release-drafter@v5.2.0-jenkins-8
+        name: Update Release
+        id: update_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
       - name: Upload Release Asset
         id: upload-release-asset 
         uses: actions/upload-release-asset@v1.0.1
