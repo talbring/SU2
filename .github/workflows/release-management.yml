@@ -45,5 +45,5 @@ jobs:
           upload_url: ${{ steps.update_release.outputs.uploadurl }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
           asset_path: ${{matrix.os_bin}}.tar.gz
           asset_name: SU2-${{ steps.update_release.outputs.tagname }}-${{matrix.os_bin}}.tar.gz
-          asset_content_type: application/gzip
+          asset_content_type: application/gzip 
           
