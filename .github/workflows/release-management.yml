@@ -7,7 +7,7 @@ on:
       - release_workflow
 
 jobs:
-  build_and_upload:
+  build_and_upload: 
     name: Build SU2
     strategy:
       fail-fast: false 
